@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/xyzjace/terraplane/config"
+	"github.com/xyzjace/terraplane/pkg/scm"
 )
 
 type ClientSuite struct {
@@ -387,4 +388,63 @@ func (s *ClientSuite) TestTeamMemberEscapesPathSegments() {
 	member, err := c.TeamMember(context.Background(), "acme", "plat?form", "al ice/..")
 	require.NoError(s.T(), err)
 	require.False(s.T(), member)
+}
+
+func (s *ClientSuite) TestGetIssueCommentSuccess() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/acme/infra/issues/comments/99", r.URL.Path)
+		_, _ = io.WriteString(w, `{"id":99,"body":"terraplane plan","user":{"login":"alice"},"issue_url":"https://api.github.com/repos/acme/infra/issues/42"}`)
+	})
+	got, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), scm.IssueComment{
+		ID:        99,
+		Body:      "terraplane plan",
+		UserLogin: "alice",
+		IssueURL:  "https://api.github.com/repos/acme/infra/issues/42",
+	}, got)
+}
+
+func (s *ClientSuite) TestGetIssueCommentNotFound() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	})
+	_, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
+	require.ErrorIs(s.T(), err, ErrNotFound)
+}
+
+func (s *ClientSuite) TestGetIssueCommentUnexpectedStatus() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"rate limited"}`)
+	})
+	_, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
+	require.Error(s.T(), err)
+	require.NotErrorIs(s.T(), err, ErrNotFound)
+	require.Contains(s.T(), err.Error(), "rate limited")
+}
+
+func (s *ClientSuite) TestGetIssueCommentBadJSON() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{not-json`)
+	})
+	_, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to decode")
+}
+
+func (s *ClientSuite) TestGetIssueCommentTransportError() {
+	c, srv := s.newClient(func(w http.ResponseWriter, r *http.Request) {})
+	srv.Close()
+	_, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to execute")
+}
+
+func (s *ClientSuite) TestGetIssueCommentMissingAccessToken() {
+	c := &client{httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
+	_, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
 }

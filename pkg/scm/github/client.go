@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,9 +13,13 @@ import (
 	"strings"
 
 	"github.com/xyzjace/terraplane/config"
+	"github.com/xyzjace/terraplane/pkg/scm"
 )
 
 //go:generate mockgen -source=client.go -destination=mock_github/mock_client.go -package=mock_github
+
+// ErrNotFound is returned when GitHub answers 404 for a resource lookup.
+var ErrNotFound = errors.New("not found")
 
 type Client interface {
 	GetCommitSHA(ctx context.Context, repo string, prNumber int) (string, error)
@@ -23,6 +28,7 @@ type Client interface {
 	UpdateComment(ctx context.Context, repo string, prNumber int, body string, commentID int) error
 	ReactToComment(ctx context.Context, repo string, commentID int, reaction string) error
 	TeamMember(ctx context.Context, org string, team string, user string) (bool, error)
+	GetIssueComment(ctx context.Context, repo string, commentID int) (scm.IssueComment, error)
 }
 
 type client struct {
@@ -197,6 +203,44 @@ func (c *client) UpdateComment(ctx context.Context, repo string, prNumber int, b
 	}
 	_, _ = io.Copy(io.Discard, res.Body)
 	return nil
+}
+
+// GetIssueComment fetches a comment so its author and body come from GitHub
+// rather than from a webhook body anyone with the secret could forge.
+func (c *client) GetIssueComment(ctx context.Context, repo string, commentID int) (scm.IssueComment, error) {
+	u := fmt.Sprintf("%s/repos/%s/issues/comments/%d", c.apiURL, repo, commentID)
+	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return scm.IssueComment{}, err
+	}
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return scm.IssueComment{}, fmt.Errorf("failed to execute GitHub API request to fetch comment #%d in repository %s: %w", commentID, repo, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	switch res.StatusCode {
+	case http.StatusOK:
+		var resp struct {
+			ID   int    `json:"id"`
+			Body string `json:"body"`
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			IssueURL string `json:"issue_url"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+			return scm.IssueComment{}, fmt.Errorf("failed to decode GitHub API response for comment #%d in repository %s: %w", commentID, repo, err)
+		}
+		return scm.IssueComment{ID: resp.ID, Body: resp.Body, UserLogin: resp.User.Login, IssueURL: resp.IssueURL}, nil
+	case http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, res.Body)
+		return scm.IssueComment{}, fmt.Errorf("comment #%d in repository %s: %w", commentID, repo, ErrNotFound)
+	default:
+		respBody, _ := io.ReadAll(res.Body)
+		return scm.IssueComment{}, fmt.Errorf("GitHub API request to fetch comment #%d in repository %s returned unexpected status %s: %s", commentID, repo, res.Status, strings.TrimSpace(string(respBody)))
+	}
 }
 
 // TeamMember checks org team membership. GitHub answers 404 for non-members

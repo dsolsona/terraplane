@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/xyzjace/terraplane/config"
 	"github.com/xyzjace/terraplane/pkg/log"
+	"github.com/xyzjace/terraplane/pkg/scm"
 	"github.com/xyzjace/terraplane/pkg/scm/github/mock_github"
 )
 
@@ -125,8 +127,18 @@ func (s *ProviderSuite) TestIssueCommentInvalidJSON() {
 	require.Contains(s.T(), err.Error(), "failed to unmarshal")
 }
 
+func apiComment(login, body string) scm.IssueComment {
+	return scm.IssueComment{
+		ID:        1,
+		Body:      body,
+		UserLogin: login,
+		IssueURL:  "https://api.github.com/repos/acme/infra/issues/42",
+	}
+}
+
 func (s *ProviderSuite) TestIssueCommentGetCommitSHAFailure() {
 	body := issueCommentPayload(s.T(), "created", true, "terraplane plan")
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(apiComment("jace", "terraplane plan"), nil)
 	s.client.EXPECT().GetCommitSHA(gomock.Any(), "acme/infra", 42).Return("", errors.New("api down"))
 
 	_, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
@@ -136,6 +148,7 @@ func (s *ProviderSuite) TestIssueCommentGetCommitSHAFailure() {
 
 func (s *ProviderSuite) TestIssueCommentHappyPath() {
 	body := issueCommentPayload(s.T(), "created", true, "terraplane plan -s stg")
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(apiComment("jace", "terraplane plan -s stg"), nil)
 	s.client.EXPECT().GetCommitSHA(gomock.Any(), "acme/infra", 42).Return("abc123", nil)
 
 	got, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
@@ -189,4 +202,113 @@ func (s *ProviderSuite) TestTeamMemberDelegatesToClient() {
 	s.client.EXPECT().TeamMember(gomock.Any(), "acme", "platform", "bob").Return(false, errors.New("boom"))
 	_, err = s.prov.TeamMember(context.Background(), "acme", "platform", "bob")
 	require.Error(s.T(), err)
+}
+
+// --- command verification against the API ---
+
+func (s *ProviderSuite) TestIssueCommentUsesAuthorAndBodyFromAPI() {
+	// Intention: a forged webhook can only trigger what the real comment says, by the real author.
+	body := issueCommentPayload(s.T(), "created", true, "terraplane apply -s prod")
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(apiComment("mallory", "terraplane plan -s stg"), nil)
+	s.client.EXPECT().GetCommitSHA(gomock.Any(), "acme/infra", 42).Return("abc123", nil)
+
+	got, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+	require.NoError(s.T(), err)
+	require.Len(s.T(), got, 1)
+	require.Equal(s.T(), "mallory", got[0].TriggeringUser)
+	require.Equal(s.T(), "terraplane plan -s stg", got[0].FullCommand)
+	require.Equal(s.T(), 1, got[0].CommentID)
+}
+
+func (s *ProviderSuite) TestIssueCommentDeletedIsIgnored() {
+	body := issueCommentPayload(s.T(), "created", true, "terraplane plan")
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(scm.IssueComment{}, fmt.Errorf("gone: %w", ErrNotFound))
+
+	got, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+	require.NoError(s.T(), err)
+	require.Nil(s.T(), got)
+}
+
+func (s *ProviderSuite) TestIssueCommentFetchFailureIsAnError() {
+	body := issueCommentPayload(s.T(), "created", true, "terraplane plan")
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(scm.IssueComment{}, errors.New("api down"))
+
+	_, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to fetch comment #1")
+}
+
+func (s *ProviderSuite) TestIssueCommentFromAnotherRepoIsIgnored() {
+	body := issueCommentPayload(s.T(), "created", true, "terraplane plan")
+	comment := apiComment("jace", "terraplane plan")
+	comment.IssueURL = "https://api.github.com/repos/acme/other/issues/42"
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(comment, nil)
+
+	got, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+	require.NoError(s.T(), err)
+	require.Nil(s.T(), got)
+}
+
+func (s *ProviderSuite) TestIssueCommentFromAnotherIssueIsIgnored() {
+	body := issueCommentPayload(s.T(), "created", true, "terraplane plan")
+	comment := apiComment("jace", "terraplane plan")
+	comment.IssueURL = "https://api.github.com/repos/acme/infra/issues/7"
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(comment, nil)
+
+	got, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+	require.NoError(s.T(), err)
+	require.Nil(s.T(), got)
+}
+
+func (s *ProviderSuite) TestIssueCommentBadIssueURLIsAnError() {
+	body := issueCommentPayload(s.T(), "created", true, "terraplane plan")
+	comment := apiComment("jace", "terraplane plan")
+	comment.IssueURL = "https://api.github.com/nope"
+	s.client.EXPECT().GetIssueComment(gomock.Any(), "acme/infra", 1).Return(comment, nil)
+
+	_, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to verify comment #1")
+}
+
+func (s *ProviderSuite) TestIssueCommentChatterSkipsAPI() {
+	// No client expectations: ordinary comments must not cost API calls.
+	for _, text := range []string{"looks good to me", "please terraplane plan", "terraplaner plan", "   "} {
+		body := issueCommentPayload(s.T(), "created", true, text)
+		got, err := s.prov.ParseWebhook(signedRequest(s.T(), "issue_comment", body))
+		require.NoError(s.T(), err, text)
+		require.Nil(s.T(), got, text)
+	}
+}
+
+func TestLooksLikeCommand(t *testing.T) {
+	require.True(t, looksLikeCommand("terraplane plan"))
+	require.True(t, looksLikeCommand("  Terraplane apply -s a\nmore text"))
+	require.False(t, looksLikeCommand("please terraplane plan"))
+	require.False(t, looksLikeCommand(""))
+	// Leading blank lines are trimmed, matching how the command parser reads the first line.
+	require.True(t, looksLikeCommand("\n\nterraplane plan"))
+}
+
+func TestParseIssueURL(t *testing.T) {
+	repo, number, err := parseIssueURL("https://api.github.com/repos/acme/infra/issues/42")
+	require.NoError(t, err)
+	require.Equal(t, "acme/infra", repo)
+	require.Equal(t, 42, number)
+
+	repo, number, err = parseIssueURL("https://ghe.example.com/api/v3/repos/acme/infra/issues/7")
+	require.NoError(t, err)
+	require.Equal(t, "acme/infra", repo)
+	require.Equal(t, 7, number)
+
+	for _, raw := range []string{
+		"https://api.github.com/repos/acme/infra/pulls/42",
+		"https://api.github.com/repos/acme/infra/issues/42/comments",
+		"https://api.github.com/repos/acme/infra/issues/x",
+		"https://api.github.com/nope",
+		"://bad",
+	} {
+		_, _, err := parseIssueURL(raw)
+		require.Error(t, err, raw)
+	}
 }

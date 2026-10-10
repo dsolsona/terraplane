@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	scm "github.com/xyzjace/terraplane/pkg/scm"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -68,6 +69,21 @@ func (m *MockClient) GetFile(ctx context.Context, repo, path, revision string) (
 func (mr *MockClientMockRecorder) GetFile(ctx, repo, path, revision any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFile", reflect.TypeOf((*MockClient)(nil).GetFile), ctx, repo, path, revision)
+}
+
+// GetIssueComment mocks base method.
+func (m *MockClient) GetIssueComment(ctx context.Context, repo string, commentID int) (scm.IssueComment, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetIssueComment", ctx, repo, commentID)
+	ret0, _ := ret[0].(scm.IssueComment)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetIssueComment indicates an expected call of GetIssueComment.
+func (mr *MockClientMockRecorder) GetIssueComment(ctx, repo, commentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIssueComment", reflect.TypeOf((*MockClient)(nil).GetIssueComment), ctx, repo, commentID)
 }
 
 // ReactToComment mocks base method.

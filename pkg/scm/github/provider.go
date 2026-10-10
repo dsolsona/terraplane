@@ -7,9 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/xyzjace/terraplane/config"
 	"github.com/xyzjace/terraplane/pkg/log"
@@ -103,6 +108,15 @@ func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, err
 	repo := payload.Repository.FullName
 	prNumber := payload.Issue.Number
 
+	if !looksLikeCommand(payload.Comment.Body) {
+		p.logger.Debug(
+			"Ignoring GitHub issue comment webhook because the comment is not a terraplane command",
+			"repo", repo,
+			"issue", prNumber,
+		)
+		return nil, nil
+	}
+
 	p.logger.Debug(
 		"Processing GitHub pull request comment webhook",
 		"repo", repo,
@@ -110,12 +124,52 @@ func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, err
 		"user", payload.Comment.User.Login,
 	)
 
-	commitSHA, err := p.client.GetCommitSHA(context.Background(), repo, prNumber)
+	// The webhook body is only trusted to tell us where to look. The author,
+	// body, and issue come from the API so a forged or stale delivery cannot
+	// put words in someone's mouth.
+	comment, err := p.client.GetIssueComment(context.Background(), repo, int(payload.Comment.ID))
+	if errors.Is(err, ErrNotFound) {
+		p.logger.Warn(
+			"Ignoring GitHub issue comment webhook because the comment no longer exists",
+			"repo", repo,
+			"pr", prNumber,
+			"comment_id", payload.Comment.ID,
+		)
+		return nil, nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve pull request head commit for repository %s PR #%d: %w", repo, prNumber, err)
+		return nil, fmt.Errorf("failed to fetch comment #%d for repository %s PR #%d: %w", payload.Comment.ID, repo, prNumber, err)
 	}
 
-	webhook := p.webhookToScmWebhook(payload, commitSHA)
+	issueRepo, issueNumber, err := parseIssueURL(comment.IssueURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify comment #%d for repository %s PR #%d: %w", comment.ID, repo, prNumber, err)
+	}
+	if !strings.EqualFold(issueRepo, repo) || issueNumber != prNumber {
+		p.logger.Warn(
+			"Ignoring GitHub issue comment webhook because the comment belongs to a different issue",
+			"repo", repo,
+			"pr", prNumber,
+			"comment_id", comment.ID,
+			"comment_repo", issueRepo,
+			"comment_issue", issueNumber,
+		)
+		return nil, nil
+	}
+
+	commitSHA, err := p.client.GetCommitSHA(context.Background(), issueRepo, issueNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve pull request head commit for repository %s PR #%d: %w", issueRepo, issueNumber, err)
+	}
+
+	webhook := scm.Webhook{
+		RepositorySlug: issueRepo,
+		PRNumber:       issueNumber,
+		FullCommand:    comment.Body,
+		TriggeringUser: comment.UserLogin,
+		CommitSHA:      commitSHA,
+		CommentID:      comment.ID,
+	}
 
 	p.logger.Info(
 		"Received pull request comment webhook",
@@ -129,15 +183,37 @@ func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, err
 	return []scm.Webhook{webhook}, nil
 }
 
-func (p *provider) webhookToScmWebhook(webhook issueCommentWebhook, commitSHA string) scm.Webhook {
-	return scm.Webhook{
-		RepositorySlug: webhook.Repository.FullName,
-		PRNumber:       webhook.Issue.Number,
-		FullCommand:    webhook.Comment.Body,
-		TriggeringUser: webhook.Comment.User.Login,
-		CommitSHA:      commitSHA,
-		CommentID:      int(webhook.Comment.ID),
+// looksLikeCommand is a cheap filter so ordinary PR chatter costs no API
+// calls. The command parser makes the real decision on the body fetched
+// from the API.
+func looksLikeCommand(body string) bool {
+	line := strings.TrimSpace(body)
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
 	}
+	fields := strings.Fields(line)
+	return len(fields) > 0 && strings.EqualFold(fields[0], "terraplane")
+}
+
+// parseIssueURL extracts owner/repo and the issue number from an API issue
+// URL such as https://api.github.com/repos/acme/infra/issues/42. GitHub
+// Enterprise prefixes the path with /api/v3, so the repos segment is located
+// rather than assumed.
+func parseIssueURL(raw string) (string, int, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", 0, fmt.Errorf("parse issue URL %q: %w", raw, err)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	i := slices.Index(parts, "repos")
+	if i < 0 || len(parts) != i+5 || parts[i+3] != "issues" {
+		return "", 0, fmt.Errorf("unexpected issue URL %q", raw)
+	}
+	number, err := strconv.Atoi(parts[i+4])
+	if err != nil {
+		return "", 0, fmt.Errorf("unexpected issue number in URL %q: %w", raw, err)
+	}
+	return parts[i+1] + "/" + parts[i+2], number, nil
 }
 
 func (p *provider) verifyWebhookSignature(r *http.Request) ([]byte, error) {
