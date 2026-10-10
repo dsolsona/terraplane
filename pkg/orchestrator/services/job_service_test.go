@@ -3,6 +3,7 @@ package services_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1007,4 +1008,137 @@ func (s *JobServiceSuite) TestHandlePeriodicResultRejectsJobNotRunning() {
 
 	err := s.svc.HandlePeriodicResult(context.Background(), "job-1", "agent-a", "out")
 	require.ErrorIs(s.T(), err, services.ErrJobInvalidStatus)
+}
+
+// --- apply gates ---
+
+func (s *JobServiceSuite) gatedService(approved, checksGreen bool) services.JobService {
+	cfgFile, err := orchestratorconfig.Parse([]byte(fmt.Sprintf(`
+agents:
+  agent-prod:
+    token_env: T1
+repos:
+  acme/infra:
+    agent: agent-prod
+    apply_requires:
+      approved: %t
+      checks_green: %t
+`, approved, checksGreen)), func(key string) string { return key })
+	require.NoError(s.T(), err)
+	return services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
+		OrchestratorJobLease: time.Minute,
+	}, cfgFile, authz.AllowAll())
+}
+
+func (s *JobServiceSuite) TestApplyGatesPassQueuesJobs() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(true, nil)
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(true, nil)
+	s.expectLockCreate("a", "stacks/a", nil)
+	s.expectUpsert("a", "stacks/a", "apply", "agent-prod", "job-a")
+
+	err := s.gatedService(true, true).CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateApprovalFailsBlocksEveryStack() {
+	wh := webhook("terraplane apply")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(false, nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("apply", []string{
+		"apply requires an approved review on pull request #42",
+	})).Return(0, nil)
+	// No locks, no upserts.
+
+	err := s.gatedService(true, false).CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateChecksFailBlocksEveryStack() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("apply", []string{
+		"apply requires all checks on commit abc123 to pass",
+	})).Return(0, nil)
+
+	err := s.gatedService(false, true).CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesReportEveryFailedGate() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(false, nil)
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("apply", []string{
+		"apply requires an approved review on pull request #42",
+		"apply requires all checks on commit abc123 to pass",
+	})).Return(0, nil)
+
+	err := s.gatedService(true, true).CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesNotConfiguredSkipLookups() {
+	// No PullRequestApproved or ChecksGreen expectations.
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectLockCreate("a", "stacks/a", nil)
+	s.expectUpsert("a", "stacks/a", "apply", "agent-prod", "job-a")
+
+	err := s.gatedService(false, false).CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesDoNotApplyToPlan() {
+	wh := webhook("terraplane plan -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectUpsert("a", "stacks/a", "plan", "agent-prod", "job-a")
+
+	err := s.gatedService(true, true).CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateApprovalLookupErrorFailsClosed() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(false, errors.New("github down"))
+
+	err := s.gatedService(true, true).CreatePendingJobs(context.Background(), wh)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to check review approval")
+}
+
+func (s *JobServiceSuite) TestApplyGateChecksLookupErrorFailsClosed() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, errors.New("github down"))
+
+	err := s.gatedService(false, true).CreatePendingJobs(context.Background(), wh)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to check commit status")
+}
+
+func (s *JobServiceSuite) TestApplyGatesRunAfterAuthorization() {
+	// Intention: an unauthorized user must not trigger gate lookups.
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionApply).Return(false, "no", nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, gomock.Any()).Return(0, nil)
+
+	cfgFile, err := orchestratorconfig.Parse([]byte(`
+agents:
+  agent-prod:
+    token_env: T1
+repos:
+  acme/infra:
+    agent: agent-prod
+    apply_requires:
+      approved: true
+`), func(key string) string { return key })
+	require.NoError(s.T(), err)
+	svc := services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{}, cfgFile, s.authz)
+	require.NoError(s.T(), svc.CreatePendingJobs(context.Background(), wh))
 }

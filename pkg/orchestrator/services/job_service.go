@@ -119,6 +119,17 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	if err != nil {
 		return err
 	}
+	if action == string(models.JobActionApply) && len(resolvedStacks) > 0 {
+		blocked, err := j.applyGateFailures(ctx, webhook)
+		if err != nil {
+			return err
+		}
+		if len(blocked) > 0 {
+			denied = append(denied, blocked...)
+			resolvedStacks = nil
+		}
+	}
+
 	denied = append(unbound, denied...)
 	if len(denied) > 0 {
 		publishDeniedComment(ctx, j.logger, j.scmPublisher, webhook.RepositorySlug, webhook.PRNumber, authz.Action(action), denied)
@@ -172,6 +183,45 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	}
 
 	return nil
+}
+
+// applyGateFailures evaluates the repo's apply_requires gates and returns a
+// reason for each gate that is not met. Gates apply to the whole command, so
+// a failure blocks every stack. A lookup error fails closed.
+func (j *jobService) applyGateFailures(ctx context.Context, webhook *scm.Webhook) ([]string, error) {
+	gates := j.orchestratorConfig.ApplyRequiresFor(webhook.RepositorySlug)
+	var reasons []string
+
+	if gates.Approved {
+		approved, err := j.scmProvider.PullRequestApproved(ctx, webhook.RepositorySlug, webhook.PRNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check review approval for repository %s pull request #%d: %w", webhook.RepositorySlug, webhook.PRNumber, err)
+		}
+		if !approved {
+			reasons = append(reasons, fmt.Sprintf("apply requires an approved review on pull request #%d", webhook.PRNumber))
+		}
+	}
+
+	if gates.ChecksGreen {
+		green, err := j.scmProvider.ChecksGreen(ctx, webhook.RepositorySlug, webhook.CommitSHA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check commit status for repository %s commit %s: %w", webhook.RepositorySlug, webhook.CommitSHA, err)
+		}
+		if !green {
+			reasons = append(reasons, fmt.Sprintf("apply requires all checks on commit %s to pass", webhook.CommitSHA))
+		}
+	}
+
+	for _, reason := range reasons {
+		j.logger.Warn(
+			"Blocked apply by gate",
+			"repo", webhook.RepositorySlug,
+			"pr", webhook.PRNumber,
+			"user", webhook.TriggeringUser,
+			"reason", reason,
+		)
+	}
+	return reasons, nil
 }
 
 // agentFor returns the agent that runs stack. The orchestrator config owns

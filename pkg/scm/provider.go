@@ -13,4 +13,9 @@ type Provider interface {
 	GetFile(fileName string, revision string, repo string) (string, error)
 	// TeamMember reports whether user is an active member of org/team.
 	TeamMember(ctx context.Context, org string, team string, user string) (bool, error)
+	// PullRequestApproved reports whether the latest review from at least one
+	// reviewer approves and no reviewer's latest review requests changes.
+	PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error)
+	// ChecksGreen reports whether every status and check run on the commit passed.
+	ChecksGreen(ctx context.Context, repo string, sha string) (bool, error)
 }

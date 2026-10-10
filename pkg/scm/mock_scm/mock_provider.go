@@ -42,6 +42,21 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
+// ChecksGreen mocks base method.
+func (m *MockProvider) ChecksGreen(ctx context.Context, repo, sha string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ChecksGreen", ctx, repo, sha)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ChecksGreen indicates an expected call of ChecksGreen.
+func (mr *MockProviderMockRecorder) ChecksGreen(ctx, repo, sha any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChecksGreen", reflect.TypeOf((*MockProvider)(nil).ChecksGreen), ctx, repo, sha)
+}
+
 // GetFile mocks base method.
 func (m *MockProvider) GetFile(fileName, revision, repo string) (string, error) {
 	m.ctrl.T.Helper()
@@ -84,6 +99,21 @@ func (m *MockProvider) ParseWebhook(r *http.Request) ([]scm.Webhook, error) {
 func (mr *MockProviderMockRecorder) ParseWebhook(r any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ParseWebhook", reflect.TypeOf((*MockProvider)(nil).ParseWebhook), r)
+}
+
+// PullRequestApproved mocks base method.
+func (m *MockProvider) PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PullRequestApproved", ctx, repo, prNumber)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PullRequestApproved indicates an expected call of PullRequestApproved.
+func (mr *MockProviderMockRecorder) PullRequestApproved(ctx, repo, prNumber any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PullRequestApproved", reflect.TypeOf((*MockProvider)(nil).PullRequestApproved), ctx, repo, prNumber)
 }
 
 // TeamMember mocks base method.

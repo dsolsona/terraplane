@@ -130,10 +130,6 @@ func (c *ConfigFile) Validate() error {
 		if _, ok := c.Agents[repo.Agent]; !ok {
 			return fmt.Errorf("repo %q references unknown agent %q", slug, repo.Agent)
 		}
-		if repo.ApplyRequires.Approved || repo.ApplyRequires.ChecksGreen {
-			// TODO: remove once apply gates are enforced; until then a set flag must not look like protection.
-			return fmt.Errorf("repo %q: apply_requires is not supported yet", slug)
-		}
 		if err := repo.Permissions.validate(fmt.Sprintf("repo %q", slug)); err != nil {
 			return err
 		}

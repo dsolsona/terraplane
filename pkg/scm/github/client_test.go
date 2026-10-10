@@ -448,3 +448,102 @@ func (s *ClientSuite) TestGetIssueCommentMissingAccessToken() {
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
 }
+
+func (s *ClientSuite) reviewsClient(reviews string) *client {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/acme/infra/pulls/42/reviews", r.URL.Path)
+		require.Equal(s.T(), "100", r.URL.Query().Get("per_page"))
+		_, _ = io.WriteString(w, reviews)
+	})
+	return c
+}
+
+func (s *ClientSuite) TestPullRequestApproved() {
+	cases := map[string]struct {
+		reviews string
+		want    bool
+	}{
+		"no reviews":                         {`[]`, false},
+		"single approval":                    {`[{"state":"APPROVED","user":{"login":"alice"}}]`, true},
+		"comment only":                       {`[{"state":"COMMENTED","user":{"login":"alice"}}]`, false},
+		"approval then comment keeps it":     {`[{"state":"APPROVED","user":{"login":"alice"}},{"state":"COMMENTED","user":{"login":"alice"}}]`, true},
+		"approval then changes requested":    {`[{"state":"APPROVED","user":{"login":"alice"}},{"state":"CHANGES_REQUESTED","user":{"login":"alice"}}]`, false},
+		"changes requested then approval":    {`[{"state":"CHANGES_REQUESTED","user":{"login":"alice"}},{"state":"APPROVED","user":{"login":"alice"}}]`, true},
+		"other reviewer requests changes":    {`[{"state":"APPROVED","user":{"login":"alice"}},{"state":"CHANGES_REQUESTED","user":{"login":"bob"}}]`, false},
+		"dismissed approval":                 {`[{"state":"APPROVED","user":{"login":"alice"}},{"state":"DISMISSED","user":{"login":"alice"}}]`, false},
+		"dismissed change request, other ok": {`[{"state":"CHANGES_REQUESTED","user":{"login":"bob"}},{"state":"DISMISSED","user":{"login":"bob"}},{"state":"APPROVED","user":{"login":"alice"}}]`, true},
+	}
+	for name, tc := range cases {
+		got, err := s.reviewsClient(tc.reviews).PullRequestApproved(context.Background(), "acme/infra", 42)
+		require.NoError(s.T(), err, name)
+		require.Equal(s.T(), tc.want, got, name)
+	}
+}
+
+func (s *ClientSuite) TestPullRequestApprovedAPIError() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := c.PullRequestApproved(context.Background(), "acme/infra", 42)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to fetch reviews")
+}
+
+func (s *ClientSuite) checksClient(status, runs string) *client {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/infra/commits/abc123/status":
+			_, _ = io.WriteString(w, status)
+		case "/repos/acme/infra/commits/abc123/check-runs":
+			require.Equal(s.T(), "100", r.URL.Query().Get("per_page"))
+			_, _ = io.WriteString(w, runs)
+		default:
+			s.T().Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	return c
+}
+
+func (s *ClientSuite) TestChecksGreen() {
+	cases := map[string]struct {
+		status string
+		runs   string
+		want   bool
+	}{
+		"nothing reported":          {`{"state":"pending","total_count":0}`, `{"check_runs":[]}`, true},
+		"statuses and runs green":   {`{"state":"success","total_count":2}`, `{"check_runs":[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"skipped"},{"status":"completed","conclusion":"neutral"}]}`, true},
+		"status pending":            {`{"state":"pending","total_count":1}`, `{"check_runs":[]}`, false},
+		"status failure":            {`{"state":"failure","total_count":1}`, `{"check_runs":[]}`, false},
+		"check run in progress":     {`{"state":"success","total_count":1}`, `{"check_runs":[{"status":"in_progress","conclusion":null}]}`, false},
+		"check run failed":          {`{"state":"success","total_count":1}`, `{"check_runs":[{"status":"completed","conclusion":"failure"}]}`, false},
+		"check run cancelled":       {`{"state":"pending","total_count":0}`, `{"check_runs":[{"status":"completed","conclusion":"cancelled"}]}`, false},
+		"check run action required": {`{"state":"pending","total_count":0}`, `{"check_runs":[{"status":"completed","conclusion":"action_required"}]}`, false},
+	}
+	for name, tc := range cases {
+		got, err := s.checksClient(tc.status, tc.runs).ChecksGreen(context.Background(), "acme/infra", "abc123")
+		require.NoError(s.T(), err, name)
+		require.Equal(s.T(), tc.want, got, name)
+	}
+}
+
+func (s *ClientSuite) TestChecksGreenStatusAPIError() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := c.ChecksGreen(context.Background(), "acme/infra", "abc123")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to fetch commit status")
+}
+
+func (s *ClientSuite) TestChecksGreenCheckRunsAPIError() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/infra/commits/abc123/status" {
+			_, _ = io.WriteString(w, `{"state":"success","total_count":1}`)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := c.ChecksGreen(context.Background(), "acme/infra", "abc123")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to fetch check runs")
+}

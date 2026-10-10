@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `repos.<slug>.permissions` (and `repos.<slug>.stacks.<name>.permissions`) in the orchestrator config list the GitHub users or `@org/team` slugs allowed to `plan`, `apply`, and `unlock` each stack. Denied stacks are reported in a single PR comment and never queued. Stacks listed in the orchestrator config carry a required `dir`; a pull request whose `terraplane.yaml` moves a listed stack to another directory, or reuses a listed directory under a new name, has that stack denied. Team membership lookups need a token with `read:org` and are cached for `ORCHESTRATOR_TEAM_CACHE_TTL` (default `5m`).
 
+- `repos.<slug>.apply_requires` in the orchestrator config gates every `apply` in a repo: `approved: true` requires an approving review with no outstanding change requests, `checks_green: true` requires every status and check run on the PR head to have passed. A failed gate is reported in the denial comment and nothing is queued.
+
 ### Changed
 
 - After verifying the webhook signature, the orchestrator re-reads each command comment from the GitHub API and acts on the author, body, and pull request as GitHub reports them rather than as the webhook body claims. Deleted comments are ignored. Comments whose first word is not `terraplane` no longer cause any API calls.

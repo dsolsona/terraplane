@@ -312,3 +312,14 @@ func TestParseIssueURL(t *testing.T) {
 		require.Error(t, err, raw)
 	}
 }
+
+func (s *ProviderSuite) TestApplyGatesDelegateToClient() {
+	s.client.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(true, nil)
+	approved, err := s.prov.PullRequestApproved(context.Background(), "acme/infra", 42)
+	require.NoError(s.T(), err)
+	require.True(s.T(), approved)
+
+	s.client.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, errors.New("boom"))
+	_, err = s.prov.ChecksGreen(context.Background(), "acme/infra", "abc123")
+	require.Error(s.T(), err)
+}
