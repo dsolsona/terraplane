@@ -78,6 +78,14 @@ func (p *provider) ChecksGreen(ctx context.Context, repo string, sha string) (bo
 	return p.client.ChecksGreen(ctx, repo, sha)
 }
 
+func (p *provider) GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error) {
+	return p.client.GetPullRequest(ctx, repo, prNumber)
+}
+
+func (p *provider) CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error) {
+	return p.client.CommitsBehind(ctx, repo, base, head)
+}
+
 func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

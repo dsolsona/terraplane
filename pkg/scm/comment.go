@@ -8,3 +8,12 @@ type IssueComment struct {
 	UserLogin string
 	IssueURL  string
 }
+
+// PullRequest is the pull request state the apply gates look at.
+type PullRequest struct {
+	Open           bool
+	Draft          bool
+	MergeableState string // GitHub: clean, unstable, has_hooks, dirty, blocked, behind, draft, unknown
+	HeadSHA        string
+	BaseRef        string
+}

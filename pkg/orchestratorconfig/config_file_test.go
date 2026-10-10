@@ -41,6 +41,8 @@ repos:
       apply: ["@acme/platform-leads"]
     apply_requires:
       approved: true
+      mergeable: true
+      undiverged: true
       checks_green: true
   acme/empty:
     agent: agent-data
@@ -367,7 +369,7 @@ func TestPermissionsFor(t *testing.T) {
 
 func TestApplyRequiresFor(t *testing.T) {
 	cfg := parseValid(t)
-	require.Equal(t, orchestratorconfig.ApplyRequires{Approved: true, ChecksGreen: true}, cfg.ApplyRequiresFor("acme/platform"))
+	require.Equal(t, orchestratorconfig.ApplyRequires{Approved: true, Mergeable: true, Undiverged: true, ChecksGreen: true}, cfg.ApplyRequiresFor("acme/platform"))
 	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/infra"))
 	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/unknown"))
 }

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `repos.<slug>.permissions` (and `repos.<slug>.stacks.<name>.permissions`) in the orchestrator config list the GitHub users or `@org/team` slugs allowed to `plan`, `apply`, and `unlock` each stack. Denied stacks are reported in a single PR comment and never queued. Stacks listed in the orchestrator config carry a required `dir`; a pull request whose `terraplane.yaml` moves a listed stack to another directory, or reuses a listed directory under a new name, has that stack denied. Team membership lookups need a token with `read:org` and are cached for `ORCHESTRATOR_TEAM_CACHE_TTL` (default `5m`).
 
-- `repos.<slug>.apply_requires` in the orchestrator config gates every `apply` in a repo: `approved: true` requires an approving review with no outstanding change requests, `checks_green: true` requires every status and check run on the PR head to have passed. A failed gate is reported in the denial comment and nothing is queued.
+- `repos.<slug>.apply_requires` in the orchestrator config gates every `apply` in a repo, using Atlantis's names: `approved` (an approving review with no outstanding change requests), `mergeable` (GitHub reports the PR as mergeable: no conflicts, not a draft, branch protection satisfied), `undiverged` (the PR head contains the latest base branch commit), and `checks_green` (every status and check run on the head passed). With an orchestrator config an apply also always requires the pull request to be open. Failed gates are reported in the denial comment and nothing is queued.
 
 ### Changed
 

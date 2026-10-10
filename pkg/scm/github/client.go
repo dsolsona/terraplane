@@ -31,6 +31,8 @@ type Client interface {
 	GetIssueComment(ctx context.Context, repo string, commentID int) (scm.IssueComment, error)
 	PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error)
 	ChecksGreen(ctx context.Context, repo string, sha string) (bool, error)
+	GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error)
+	CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error)
 }
 
 type client struct {
@@ -317,6 +319,44 @@ func (c *client) ChecksGreen(ctx context.Context, repo string, sha string) (bool
 		}
 	}
 	return true, nil
+}
+
+func (c *client) GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error) {
+	u := fmt.Sprintf("%s/repos/%s/pulls/%d", c.apiURL, repo, prNumber)
+	var resp struct {
+		State          string `json:"state"`
+		Draft          bool   `json:"draft"`
+		MergeableState string `json:"mergeable_state"`
+		Head           struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	}
+	if err := c.getJSON(ctx, u, &resp); err != nil {
+		return scm.PullRequest{}, fmt.Errorf("failed to fetch pull request for repository %s PR #%d: %w", repo, prNumber, err)
+	}
+	return scm.PullRequest{
+		Open:           resp.State == "open",
+		Draft:          resp.Draft,
+		MergeableState: resp.MergeableState,
+		HeadSHA:        resp.Head.SHA,
+		BaseRef:        resp.Base.Ref,
+	}, nil
+}
+
+// CommitsBehind uses the compare endpoint: behind_by counts commits on base
+// that head does not contain.
+func (c *client) CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error) {
+	u := fmt.Sprintf("%s/repos/%s/compare/%s...%s", c.apiURL, repo, base, head)
+	var resp struct {
+		BehindBy int `json:"behind_by"`
+	}
+	if err := c.getJSON(ctx, u, &resp); err != nil {
+		return 0, fmt.Errorf("failed to compare %s with %s in repository %s: %w", head, base, repo, err)
+	}
+	return resp.BehindBy, nil
 }
 
 // TeamMember checks org team membership. GitHub answers 404 for non-members

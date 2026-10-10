@@ -18,4 +18,7 @@ type Provider interface {
 	PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error)
 	// ChecksGreen reports whether every status and check run on the commit passed.
 	ChecksGreen(ctx context.Context, repo string, sha string) (bool, error)
+	GetPullRequest(ctx context.Context, repo string, prNumber int) (PullRequest, error)
+	// CommitsBehind reports how many commits on base are missing from head.
+	CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error)
 }

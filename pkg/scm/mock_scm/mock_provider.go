@@ -57,6 +57,21 @@ func (mr *MockProviderMockRecorder) ChecksGreen(ctx, repo, sha any) *gomock.Call
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChecksGreen", reflect.TypeOf((*MockProvider)(nil).ChecksGreen), ctx, repo, sha)
 }
 
+// CommitsBehind mocks base method.
+func (m *MockProvider) CommitsBehind(ctx context.Context, repo, base, head string) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CommitsBehind", ctx, repo, base, head)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CommitsBehind indicates an expected call of CommitsBehind.
+func (mr *MockProviderMockRecorder) CommitsBehind(ctx, repo, base, head any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CommitsBehind", reflect.TypeOf((*MockProvider)(nil).CommitsBehind), ctx, repo, base, head)
+}
+
 // GetFile mocks base method.
 func (m *MockProvider) GetFile(fileName, revision, repo string) (string, error) {
 	m.ctrl.T.Helper()
@@ -70,6 +85,21 @@ func (m *MockProvider) GetFile(fileName, revision, repo string) (string, error) 
 func (mr *MockProviderMockRecorder) GetFile(fileName, revision, repo any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFile", reflect.TypeOf((*MockProvider)(nil).GetFile), fileName, revision, repo)
+}
+
+// GetPullRequest mocks base method.
+func (m *MockProvider) GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPullRequest", ctx, repo, prNumber)
+	ret0, _ := ret[0].(scm.PullRequest)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPullRequest indicates an expected call of GetPullRequest.
+func (mr *MockProviderMockRecorder) GetPullRequest(ctx, repo, prNumber any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPullRequest", reflect.TypeOf((*MockProvider)(nil).GetPullRequest), ctx, repo, prNumber)
 }
 
 // Name mocks base method.

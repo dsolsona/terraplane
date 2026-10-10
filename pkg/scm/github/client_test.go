@@ -547,3 +547,48 @@ func (s *ClientSuite) TestChecksGreenCheckRunsAPIError() {
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to fetch check runs")
 }
+
+func (s *ClientSuite) TestGetPullRequest() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/acme/infra/pulls/42", r.URL.Path)
+		_, _ = io.WriteString(w, `{"state":"open","draft":true,"mergeable_state":"dirty","head":{"sha":"abc123"},"base":{"ref":"main"}}`)
+	})
+	got, err := c.GetPullRequest(context.Background(), "acme/infra", 42)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), scm.PullRequest{Open: true, Draft: true, MergeableState: "dirty", HeadSHA: "abc123", BaseRef: "main"}, got)
+
+	c, _ = s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"state":"closed","mergeable_state":"unknown","head":{"sha":"abc123"},"base":{"ref":"main"}}`)
+	})
+	got, err = c.GetPullRequest(context.Background(), "acme/infra", 42)
+	require.NoError(s.T(), err)
+	require.False(s.T(), got.Open)
+}
+
+func (s *ClientSuite) TestGetPullRequestAPIError() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := c.GetPullRequest(context.Background(), "acme/infra", 42)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to fetch pull request")
+}
+
+func (s *ClientSuite) TestCommitsBehind() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/acme/infra/compare/main...abc123", r.URL.Path)
+		_, _ = io.WriteString(w, `{"status":"diverged","ahead_by":2,"behind_by":5}`)
+	})
+	behind, err := c.CommitsBehind(context.Background(), "acme/infra", "main", "abc123")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), 5, behind)
+}
+
+func (s *ClientSuite) TestCommitsBehindAPIError() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := c.CommitsBehind(context.Background(), "acme/infra", "main", "abc123")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to compare")
+}
