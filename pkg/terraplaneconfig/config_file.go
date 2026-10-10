@@ -60,6 +60,9 @@ func (c *ConfigFile) Validate() error {
 		if name == "" {
 			return fmt.Errorf("environment name is required")
 		}
+		if hasControlChars(name) {
+			return fmt.Errorf("environment name %q contains control characters", name)
+		}
 		if _, ok := seenEnvs[name]; ok {
 			return fmt.Errorf("duplicate environment name %q", name)
 		}
@@ -74,8 +77,14 @@ func (c *ConfigFile) Validate() error {
 			if stackName == "" {
 				return fmt.Errorf("stack name is required in environment %q", name)
 			}
+			if hasControlChars(stackName) {
+				return fmt.Errorf("stack name %q in environment %q contains control characters", stackName, name)
+			}
 			if strings.TrimSpace(stack.Dir) == "" {
 				return fmt.Errorf("stack %q in environment %q is missing dir", stackName, name)
+			}
+			if hasControlChars(stack.Dir) {
+				return fmt.Errorf("stack %q in environment %q dir contains control characters", stackName, name)
 			}
 			if prevEnv, ok := seenStacks[stackName]; ok {
 				return fmt.Errorf("stack name %q is not unique (found in environments %q and %q)", stackName, prevEnv, name)
@@ -194,6 +203,17 @@ func (c *ConfigFile) ResolveStacks(stackNames, environmentNames []string) ([]Res
 	}
 
 	return resolved, nil
+}
+
+// hasControlChars reports whether s contains characters that could break out
+// of the markdown terraplane writes names into (newlines, tabs, escapes).
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func plural(n int) string {

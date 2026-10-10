@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ repos:
       apply: ["alice"]
     stacks:
       reporting:
+        dir: stacks/reporting
         permissions:
           plan: ["bob"]
           apply: ["bob"]
@@ -249,4 +251,26 @@ func TestTeamLookupErrorIsNotCached(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Len(t, teams.calls, 2)
+}
+
+func TestTeamCacheSweepsExpiredEntriesWhenLarge(t *testing.T) {
+	c := newTeamCache(time.Minute)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+
+	for i := range teamCacheSweepSize {
+		c.set(fmt.Sprintf("acme/team/user-%d", i), true)
+	}
+	require.Len(t, c.entries, teamCacheSweepSize)
+
+	// Still fresh: the sweep runs but removes nothing.
+	c.set("acme/team/fresh", true)
+	require.Len(t, c.entries, teamCacheSweepSize+1)
+
+	now = now.Add(2 * time.Minute)
+	c.set("acme/team/later", true)
+	require.Len(t, c.entries, 1)
+	member, ok := c.get("acme/team/later")
+	require.True(t, ok)
+	require.True(t, member)
 }

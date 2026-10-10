@@ -7,6 +7,7 @@ import (
 	"github.com/xyzjace/terraplane/pkg/authz"
 	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 	"github.com/xyzjace/terraplane/pkg/scm"
 	"github.com/xyzjace/terraplane/pkg/terraplaneconfig"
 )
@@ -46,6 +47,51 @@ func authorizeStacks(
 		allowed = append(allowed, stack)
 	}
 	return allowed, denied, nil
+}
+
+// bindStackDirs drops stacks whose directory disagrees with the orchestrator
+// config. Permissions and agents are keyed by stack name while the pull
+// request controls which directory a name maps to, so a listed stack must
+// keep its pinned dir and no other name may claim that dir.
+func bindStackDirs(
+	logger log.Logger,
+	orchestratorConfig *orchestratorconfig.ConfigFile,
+	repo string,
+	prNumber int,
+	stacks []terraplaneconfig.ResolvedStack,
+) ([]terraplaneconfig.ResolvedStack, []string) {
+	if !orchestratorConfig.Enabled() {
+		return stacks, nil
+	}
+
+	var kept []terraplaneconfig.ResolvedStack
+	var denied []string
+	for _, stack := range stacks {
+		pinned, namePinned := orchestratorConfig.StackDir(repo, stack.Name)
+		owner, dirPinned := orchestratorConfig.StackByDir(repo, stack.Dir)
+
+		reason := ""
+		switch {
+		case namePinned && (!dirPinned || owner != stack.Name):
+			reason = fmt.Sprintf("stack %s is pinned to dir %s in the orchestrator config but the pull request maps it to %s", stack.Name, pinned, stack.Dir)
+		case !namePinned && dirPinned:
+			reason = fmt.Sprintf("dir %s belongs to stack %s in the orchestrator config and cannot be used by stack %s", stack.Dir, owner, stack.Name)
+		}
+		if reason != "" {
+			logger.Warn(
+				"Denied stack whose dir does not match the orchestrator config",
+				"repo", repo,
+				"pr", prNumber,
+				"stack", stack.Name,
+				"dir", stack.Dir,
+				"reason", reason,
+			)
+			denied = append(denied, reason)
+			continue
+		}
+		kept = append(kept, stack)
+	}
+	return kept, denied
 }
 
 // publishDeniedComment writes one PR comment listing every denied stack. Failures are logged.

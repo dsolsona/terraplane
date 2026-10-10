@@ -275,3 +275,18 @@ environments:
 		require.Len(t, got, 2)
 	})
 }
+
+func TestValidateRejectsControlCharacters(t *testing.T) {
+	cases := map[string]string{
+		"environment name": "environments:\n  - name: \"stag\\ning\"\n    agent: a\n    stacks:\n      - name: a\n        dir: stacks/a\n",
+		"stack name":       "environments:\n  - name: staging\n    agent: a\n    stacks:\n      - name: \"a\\n## pwned\"\n        dir: stacks/a\n",
+		"stack dir":        "environments:\n  - name: staging\n    agent: a\n    stacks:\n      - name: a\n        dir: \"stacks/a\\tb\"\n",
+	}
+	for name, yaml := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := terraplaneconfig.ParseConfigFile([]byte(yaml))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "contains control characters")
+		})
+	}
+}

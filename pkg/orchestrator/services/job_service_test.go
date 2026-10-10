@@ -839,6 +839,7 @@ repos:
     agent: agent-prod
     stacks:
       b:
+        dir: stacks/b
         agent: agent-data
 `), func(key string) string { return key })
 	require.NoError(s.T(), err)
@@ -933,4 +934,77 @@ func (s *JobServiceSuite) TestAuthorizationLookupErrorFailsClosed() {
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), `failed to authorize plan of stack "a" in repository acme/infra for jace`)
 	require.Contains(s.T(), err.Error(), "github down")
+}
+
+// --- dir binding ---
+
+func (s *JobServiceSuite) TestRoutingDeniesListedStackMovedToAnotherDir() {
+	// Intention: a PR cannot keep a privileged stack name while pointing it at a different directory.
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(`
+environments:
+  - name: default
+    stacks:
+      - name: a
+        dir: stacks/a
+      - name: b
+        dir: stacks/elsewhere
+`, nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("plan", []string{
+		"stack b is pinned to dir stacks/b in the orchestrator config but the pull request maps it to stacks/elsewhere",
+	})).Return(0, nil)
+	s.expectUpsert("a", "stacks/a", "plan", "agent-prod", "job-a")
+
+	err := s.routedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestRoutingDeniesNewStackNameOnPinnedDir() {
+	// Intention: a PR cannot reach a pinned directory under a fresh name that falls back to repo defaults.
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(`
+environments:
+  - name: default
+    stacks:
+      - name: b2
+        dir: ./stacks/b/
+`, nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("plan", []string{
+		"dir ./stacks/b/ belongs to stack b in the orchestrator config and cannot be used by stack b2",
+	})).Return(0, nil)
+
+	err := s.routedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestRoutingAcceptsPinnedStackWithEquivalentDirSpelling() {
+	wh := webhook("terraplane plan -s b")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(`
+environments:
+  - name: default
+    stacks:
+      - name: b
+        dir: ./stacks/b/
+`, nil)
+	s.expectUpsert("b", "./stacks/b/", "plan", "agent-data", "job-b")
+
+	err := s.routedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestHandlePeriodicResultRejectsWrongAgent() {
+	job := resultJob(models.JobActionPlan)
+	s.jobs.EXPECT().Get(gomock.Any(), "job-1").Return(job, nil)
+
+	err := s.svc.HandlePeriodicResult(context.Background(), "job-1", "agent-b", "out")
+	require.ErrorIs(s.T(), err, services.ErrJobWrongAgent)
+}
+
+func (s *JobServiceSuite) TestHandlePeriodicResultRejectsJobNotRunning() {
+	job := resultJob(models.JobActionPlan)
+	job.Status = models.JobStatusSucceeded
+	s.jobs.EXPECT().Get(gomock.Any(), "job-1").Return(job, nil)
+
+	err := s.svc.HandlePeriodicResult(context.Background(), "job-1", "agent-a", "out")
+	require.ErrorIs(s.T(), err, services.ErrJobInvalidStatus)
 }

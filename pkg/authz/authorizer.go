@@ -126,6 +126,10 @@ func entriesFor(perms orchestratorconfig.Permissions, action Action) []string {
 	}
 }
 
+// teamCacheSweepSize is the entry count at which set drops expired entries so
+// a busy public repo cannot grow the cache without bound.
+const teamCacheSweepSize = 1024
+
 // teamCache remembers team membership answers for ttl so a command touching
 // many stacks does not ask GitHub once per stack. A ttl <= 0 disables it.
 type teamCache struct {
@@ -172,5 +176,13 @@ func (c *teamCache) set(key string, member bool) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = teamCacheEntry{member: member, expires: c.now().Add(c.ttl)}
+	now := c.now()
+	if len(c.entries) >= teamCacheSweepSize {
+		for k, entry := range c.entries {
+			if !now.Before(entry.expires) {
+				delete(c.entries, k)
+			}
+		}
+	}
+	c.entries[key] = teamCacheEntry{member: member, expires: now.Add(c.ttl)}
 }

@@ -202,7 +202,7 @@ func (c *client) UpdateComment(ctx context.Context, repo string, prNumber int, b
 // TeamMember checks org team membership. GitHub answers 404 for non-members
 // and for callers whose token lacks read:org, so both read as "not a member".
 func (c *client) TeamMember(ctx context.Context, org string, team string, user string) (bool, error) {
-	u := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", c.apiURL, org, team, user)
+	u := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", c.apiURL, url.PathEscape(org), url.PathEscape(team), url.PathEscape(user))
 	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return false, err

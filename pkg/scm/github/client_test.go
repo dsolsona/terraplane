@@ -378,3 +378,13 @@ func (s *ClientSuite) TestTeamMemberMissingAccessToken() {
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
 }
+
+func (s *ClientSuite) TestTeamMemberEscapesPathSegments() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/orgs/acme/teams/plat%3Fform/memberships/al%20ice%2F..", r.URL.EscapedPath())
+		w.WriteHeader(http.StatusNotFound)
+	})
+	member, err := c.TeamMember(context.Background(), "acme", "plat?form", "al ice/..")
+	require.NoError(s.T(), err)
+	require.False(s.T(), member)
+}
