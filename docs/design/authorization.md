@@ -60,6 +60,7 @@ repos:
       unlock: ["alice"]
     stacks:
       reporting:                          # per-stack overrides
+        dir: stacks/reporting             # required: pins the name to a directory
         agent: agent-data
         permissions:
           plan:  ["alice", "bob"]
@@ -81,11 +82,20 @@ Semantics:
 - `agents` lists every agent allowed to talk to the orchestrator. Tokens are read from the named
   env vars at startup. Two agents may not share a token.
 - `repos.<slug>.agent` is the default agent for the repo. `stacks.<name>.agent` overrides it.
-  Both must name an entry in `agents`.
+  Both must name an entry in `agents`. Repo slugs are case-insensitive.
+- Every stack listed under `stacks` must give its `dir`, relative to the repository, and two
+  stacks in a repo cannot share a dir. Permissions and agents are keyed by stack *name* while the
+  PR's `terraplane.yaml` decides which directory a name maps to, so without this pin a PR could
+  rename a privileged stack onto another directory. A PR stack whose name is listed must keep the
+  pinned dir, and a PR stack whose dir is pinned to another name is denied. Unlisted names fall
+  back to the repo defaults, so the repo default agent and permissions are the floor: make them
+  the least privileged in the repo.
 - `permissions` lists are GitHub logins or `@org/team` slugs. A stack-level `permissions` block
   replaces the repo-level one for that stack entirely. An action with an empty or missing list is
   denied for everyone. `unlock` defaults to the `apply` list when omitted.
-- `apply_requires` applies to every `apply` in the repo. Both flags default to false.
+- `apply_requires` applies to every `apply` in the repo. Both flags default to false. Until the
+  gates PR lands, setting either flag is a validation error so a set flag never looks like
+  protection it does not provide.
 - A webhook from a repo not listed under `repos` is logged and ignored. No comment is written,
   since the orchestrator has no relationship with that repo.
 - When the config file is present, the `agent` field in `terraplane.yaml` is ignored. Stacks
@@ -170,6 +180,25 @@ Reuses `feedback` formatting so it looks like every other terraplane comment:
 
 One comment per command listing every denied stack and reason, not one comment per stack.
 
+## Security notes
+
+Things the design relies on that are not enforced by code, found in review of PR 4:
+
+- **Plan permission is code execution on the agent.** `terraform init` fetches providers from the
+  PR's own configuration and data sources such as `external` run commands during plan. Anyone in
+  a `plan` list can run code with that stack's agent credentials. Per-agent credentials are what
+  bound the damage; choose `plan` lists accordingly.
+- **The webhook secret is a shared trust root.** Anyone who knows
+  `ORCHESTRATOR_GITHUB_WEBHOOK_SECRET` can forge a signed webhook naming any repo, PR, user, and
+  command. Only the operator should configure webhooks, ideally one org-level webhook. PR 5 below
+  removes most of this risk by re-reading the comment from the GitHub API before acting on it.
+- **Authorization is evaluated at comment time against the PR head fetched then.** A PR author
+  can push between a reviewer's `apply` comment and the webhook arriving. Inherent to the
+  comment-driven model; the `checks_green` gate narrows the window.
+- **Team membership needs `read:org`.** Without it GitHub answers 404, which reads as "not a
+  member", so team entries deny silently. Document, and consider a startup probe.
+- **Cache TTL.** A user removed from a team keeps access for up to `ORCHESTRATOR_TEAM_CACHE_TTL`.
+
 ## Code changes by PR
 
 Each PR branches from upstream `main`, is merged into `integration` for internal use, and is
@@ -220,14 +249,26 @@ entry under Unreleased.
 - Tests: user allowed, team allowed, team denied, partial denial queues the allowed stacks only,
   team lookup error fails closed, cache hit avoids second API call.
 
-### PR 5: Apply gates
+### PR 5: Verify commands against the GitHub API
+
+- `pkg/scm/github`: after signature verification, fetch
+  `GET /repos/{slug}/issues/comments/{id}` and `GET /repos/{slug}/pulls/{n}` with the
+  orchestrator token; take the login, body, repo slug, and PR head from the API responses rather
+  than the webhook body, and confirm the issue is a pull request. A comment that no longer exists
+  or whose body differs is ignored.
+- Effect: a forged or replayed webhook can at most trigger what the real comment says, authored
+  by the real commenter. Legacy mode gets the same check since it costs one API call and changes
+  no behaviour for genuine deliveries.
+- Tests: mismatching body ignored, deleted comment ignored, API error fails closed.
+
+### PR 6: Apply gates
 
 - `pkg/scm`: add `PullRequestApproved(ctx, repo, pr)` and `ChecksGreen(ctx, repo, sha)` to
   `Provider`; GitHub implementations with httptest coverage.
 - `pkg/orchestrator/services/job_service.go`: evaluate gates after authorization for `apply`.
 - Tests: each gate pass and fail, gate not configured skips the API call, API error fails closed.
 
-### PR 6: Packaging and docs
+### PR 7: Packaging and docs
 
 - Helm chart: `orchestrator.configFile` value rendered to a ConfigMap and mounted; agent token
   env vars documented in the examples.
@@ -246,9 +287,10 @@ entry under Unreleased.
 
 ## Checklist
 
-- [ ] PR 1 config file loader
-- [ ] PR 2 per-agent tokens
-- [ ] PR 3 orchestrator-owned routing
-- [ ] PR 4 authorization
-- [ ] PR 5 apply gates
-- [ ] PR 6 packaging and docs
+- [x] PR 1 config file loader
+- [x] PR 2 per-agent tokens
+- [x] PR 3 orchestrator-owned routing
+- [ ] PR 4 authorization (open; hardened after security review)
+- [ ] PR 5 verify commands against the GitHub API
+- [ ] PR 6 apply gates
+- [ ] PR 7 packaging and docs
