@@ -87,6 +87,18 @@ func UnlockResultComment(stackName string, status models.JobStatus, errMsg strin
 	return b.String()
 }
 
+// DeniedComment formats an authorization denial as a GitHub PR comment body.
+// One comment covers every denied stack of a command.
+func DeniedComment(action string, reasons []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### %s · ⛔ denied\n", action)
+	b.WriteString("\n> [!CAUTION]\n")
+	for _, reason := range reasons {
+		fmt.Fprintf(&b, "> - %s\n", strings.TrimSpace(reason))
+	}
+	return b.String()
+}
+
 func writeHeader(b *strings.Builder, action, stack string, status models.JobStatus) {
 	statusLabel := statusLabel(status)
 	switch {

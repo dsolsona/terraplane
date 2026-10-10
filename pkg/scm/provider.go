@@ -1,6 +1,7 @@
 package scm
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -10,4 +11,6 @@ type Provider interface {
 	Name() string
 	ParseWebhook(r *http.Request) ([]Webhook, error)
 	GetFile(fileName string, revision string, repo string) (string, error)
+	// TeamMember reports whether user is an active member of org/team.
+	TeamMember(ctx context.Context, org string, team string, user string) (bool, error)
 }

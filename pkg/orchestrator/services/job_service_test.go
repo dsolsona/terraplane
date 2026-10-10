@@ -11,7 +11,10 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/xyzjace/terraplane/config"
+	"github.com/xyzjace/terraplane/pkg/authz"
+	"github.com/xyzjace/terraplane/pkg/authz/mock_authz"
 	"github.com/xyzjace/terraplane/pkg/command"
+	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
 	"github.com/xyzjace/terraplane/pkg/orchestrator/services"
 	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
@@ -29,6 +32,7 @@ type JobServiceSuite struct {
 	publisher *mock_scm.MockPublisher
 	jobs      *mock_repository.MockJobRepository
 	locks     *mock_repository.MockLockRepository
+	authz     *mock_authz.MockAuthorizer
 	svc       services.JobService
 }
 
@@ -42,10 +46,11 @@ func (s *JobServiceSuite) SetupTest() {
 	s.publisher = mock_scm.NewMockPublisher(s.ctrl)
 	s.jobs = mock_repository.NewMockJobRepository(s.ctrl)
 	s.locks = mock_repository.NewMockLockRepository(s.ctrl)
+	s.authz = mock_authz.NewMockAuthorizer(s.ctrl)
 	s.svc = services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
 		OrchestratorJobLease:           time.Minute,
 		OrchestratorJobCleanupInterval: 30 * 24 * time.Hour,
-	}, &orchestratorconfig.ConfigFile{})
+	}, &orchestratorconfig.ConfigFile{}, authz.AllowAll())
 }
 
 func webhook(comment string) *scm.Webhook {
@@ -522,7 +527,7 @@ func (s *JobServiceSuite) TestCleanupExpiredJobsError() {
 func (s *JobServiceSuite) TestCleanupExpiredJobsDisabledWhenIntervalZero() {
 	svc := services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
 		OrchestratorJobCleanupInterval: 0,
-	}, &orchestratorconfig.ConfigFile{})
+	}, &orchestratorconfig.ConfigFile{}, authz.AllowAll())
 	require.NoError(s.T(), svc.CleanupExpiredJobs(context.Background()))
 }
 
@@ -839,7 +844,7 @@ repos:
 	require.NoError(s.T(), err)
 	return services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
 		OrchestratorJobLease: time.Minute,
-	}, cfgFile)
+	}, cfgFile, authz.AllowAll())
 }
 
 func (s *JobServiceSuite) TestRoutingUsesOrchestratorConfigAndIgnoresYAMLAgents() {
@@ -860,4 +865,72 @@ func (s *JobServiceSuite) TestLegacyRoutingRequiresYAMLAgents() {
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to parse terraplane.yaml")
 	require.Contains(s.T(), err.Error(), `stack "a" in environment "default" has no agent`)
+}
+
+// --- authorization ---
+
+func (s *JobServiceSuite) authorizedService() services.JobService {
+	return services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
+		OrchestratorJobLease: time.Minute,
+	}, &orchestratorconfig.ConfigFile{}, s.authz)
+}
+
+func (s *JobServiceSuite) TestAuthorizationAllowsEveryStack() {
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionPlan).Return(true, "", nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "b", authz.ActionPlan).Return(true, "", nil)
+	s.expectUpsert("a", "stacks/a", "plan", "agent-a", "job-a")
+	s.expectUpsert("b", "stacks/b", "plan", "agent-b", "job-b")
+
+	err := s.authorizedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestAuthorizationQueuesAllowedStacksAndCommentsDenied() {
+	wh := webhook("terraplane apply")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionApply).Return(true, "", nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "b", authz.ActionApply).Return(false, "jace is not allowed to apply stack b in acme/infra", nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("apply", []string{
+		"jace is not allowed to apply stack b in acme/infra",
+	})).Return(0, nil)
+	s.expectLockCreate("a", "stacks/a", nil)
+	s.expectUpsert("a", "stacks/a", "apply", "agent-a", "job-a")
+	// No lock and no upsert for b.
+
+	err := s.authorizedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestAuthorizationDeniesEverythingQueuesNothing() {
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", gomock.Any(), authz.ActionPlan).Return(false, "no", nil).Times(2)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, gomock.Any()).Return(0, nil)
+
+	err := s.authorizedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestAuthorizationDeniedCommentIsBestEffort() {
+	wh := webhook("terraplane plan -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionPlan).Return(false, "no", nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, gomock.Any()).Return(0, errors.New("github down"))
+
+	err := s.authorizedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestAuthorizationLookupErrorFailsClosed() {
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionPlan).Return(false, "", errors.New("github down"))
+	// No upsert, no comment: the whole command fails.
+
+	err := s.authorizedService().CreatePendingJobs(context.Background(), wh)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), `failed to authorize plan of stack "a" in repository acme/infra for jace`)
+	require.Contains(s.T(), err.Error(), "github down")
 }

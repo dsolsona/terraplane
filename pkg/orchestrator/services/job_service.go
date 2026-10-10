@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xyzjace/terraplane/config"
+	"github.com/xyzjace/terraplane/pkg/authz"
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
@@ -41,6 +42,7 @@ type jobService struct {
 	scmProvider        scm.Provider
 	scmPublisher       scm.Publisher
 	orchestratorConfig *orchestratorconfig.ConfigFile
+	authorizer         authz.Authorizer
 	jobLease           time.Duration
 	jobCleanupInterval time.Duration
 }
@@ -53,6 +55,7 @@ func NewJobService(
 	scmPublisher scm.Publisher,
 	config *config.Config,
 	orchestratorConfig *orchestratorconfig.ConfigFile,
+	authorizer authz.Authorizer,
 ) JobService {
 	return &jobService{
 		logger:             logger,
@@ -61,6 +64,7 @@ func NewJobService(
 		scmProvider:        scmProvider,
 		scmPublisher:       scmPublisher,
 		orchestratorConfig: orchestratorConfig,
+		authorizer:         authorizer,
 		jobLease:           config.OrchestratorJobLease,
 		jobCleanupInterval: config.OrchestratorJobCleanupInterval,
 	}
@@ -103,6 +107,18 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	resolvedStacks, err := config.ResolveStacks(stackNames, environmentNames)
 	if err != nil {
 		return fmt.Errorf("failed to resolve stacks for repository %s pull request #%d: %w", webhook.RepositorySlug, webhook.PRNumber, err)
+	}
+
+	resolvedStacks, denied, err := authorizeStacks(
+		ctx, j.logger, j.authorizer,
+		webhook.TriggeringUser, webhook.RepositorySlug, webhook.PRNumber,
+		resolvedStacks, authz.Action(action),
+	)
+	if err != nil {
+		return err
+	}
+	if len(denied) > 0 {
+		publishDeniedComment(ctx, j.logger, j.scmPublisher, webhook.RepositorySlug, webhook.PRNumber, authz.Action(action), denied)
 	}
 
 	for _, stack := range resolvedStacks {

@@ -21,6 +21,7 @@ type Config struct {
 	OrchestratorJobCleanupInterval        time.Duration `mapstructure:"ORCHESTRATOR_JOB_CLEANUP_INTERVAL"`
 	OrchestratorJobCleanupPollInterval    time.Duration `mapstructure:"ORCHESTRATOR_JOB_CLEANUP_POLL_INTERVAL"`
 	OrchestratorConfigPath                string        `mapstructure:"ORCHESTRATOR_CONFIG_PATH"`
+	OrchestratorTeamCacheTTL              time.Duration `mapstructure:"ORCHESTRATOR_TEAM_CACHE_TTL"`
 	AgentClientShutdownTimer              time.Duration `mapstructure:"AGENT_CLIENT_SHUTDOWN_TIMER"`
 	AgentOrchestratorURL                  string        `mapstructure:"AGENT_ORCHESTRATOR_URL"`
 	AgentPollInterval                     time.Duration `mapstructure:"AGENT_POLL_INTERVAL"`
@@ -77,6 +78,7 @@ func init() {
 	viper.SetDefault("ORCHESTRATOR_JOB_CLEANUP_INTERVAL", "720h")
 	viper.SetDefault("ORCHESTRATOR_JOB_CLEANUP_POLL_INTERVAL", "1h")
 	viper.SetDefault("ORCHESTRATOR_CONFIG_PATH", "")
+	viper.SetDefault("ORCHESTRATOR_TEAM_CACHE_TTL", "5m")
 	viper.SetDefault("AGENT_CLIENT_SHUTDOWN_TIMER", "5s")
 	viper.SetDefault("AGENT_ORCHESTRATOR_URL", "http://127.0.0.1:8080")
 	viper.SetDefault("AGENT_POLL_INTERVAL", "5s")
