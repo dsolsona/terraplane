@@ -73,7 +73,9 @@ repos:
       apply:  ["@acme/platform-leads"]
       unlock: ["@acme/platform-leads"]
     apply_requires:
-      approved: true                      # PR has an approving review and no outstanding changes requested
+      approved: true                      # an approving review and no outstanding change requests
+      mergeable: true                     # GitHub mergeable_state clean/unstable/has_hooks (no conflicts, not draft, protection satisfied)
+      undiverged: true                    # PR head contains the latest base branch commit
       checks_green: true                  # all status checks and check runs on the head commit passed
 ```
 
@@ -93,9 +95,9 @@ Semantics:
 - `permissions` lists are GitHub logins or `@org/team` slugs. A stack-level `permissions` block
   replaces the repo-level one for that stack entirely. An action with an empty or missing list is
   denied for everyone. `unlock` defaults to the `apply` list when omitted.
-- `apply_requires` applies to every `apply` in the repo. Both flags default to false. Until the
-  gates PR lands, setting either flag is a validation error so a set flag never looks like
-  protection it does not provide.
+- `apply_requires` applies to every `apply` in the repo. All gates default to false. The names
+  follow Atlantis: `approved`, `mergeable`, `undiverged`, `checks_green`. With a config file an
+  apply always requires the pull request to be open, regardless of gates.
 - A webhook from a repo not listed under `repos` is logged and ignored. No comment is written,
   since the orchestrator has no relationship with that repo.
 - When the config file is present, the `agent` field in `terraplane.yaml` is ignored. Stacks
@@ -155,10 +157,16 @@ The no-config implementation always returns allowed.
 
 ### Apply gates
 
-Checked only for `apply`, only when the repo sets them, after authorization passes:
+Checked only for `apply`, after authorization passes. With a config file the pull request is
+always fetched (`GET /repos/{slug}/pulls/{n}`) and must be open. Then, per configured gate:
 
-- `approved`: fetch `GET /repos/{slug}/pulls/{n}/reviews`, keep the latest review per reviewer,
-  require at least one `APPROVED` and no `CHANGES_REQUESTED`.
+- `approved`: fetch `GET /repos/{slug}/pulls/{n}/reviews`, keep the latest review per reviewer
+  (`COMMENTED` does not change it, `DISMISSED` clears it), require at least one `APPROVED` and no
+  `CHANGES_REQUESTED`.
+- `mergeable`: the pull request's `mergeable_state` must be `clean`, `unstable`, or `has_hooks`,
+  as in Atlantis. `dirty`, `draft`, `blocked`, and `behind` fail with a reason naming the cause;
+  `unknown` (GitHub still computing after a push) fails with a "try again shortly" reason.
+- `undiverged`: `GET /repos/{slug}/compare/{base}...{head}` must report `behind_by` of zero.
 - `checks_green`: fetch `GET /repos/{slug}/commits/{sha}/status` and
   `GET /repos/{slug}/commits/{sha}/check-runs` for the PR head. Require the combined status to be
   `success` (or no statuses at all) and every check run to be `completed` with conclusion
@@ -259,7 +267,12 @@ entry under Unreleased.
 - Effect: a forged or replayed webhook can at most trigger what the real comment says, authored
   by the real commenter. Legacy mode gets the same check since it costs one API call and changes
   no behaviour for genuine deliveries.
-- Tests: mismatching body ignored, deleted comment ignored, API error fails closed.
+- As built: the API body is simply used as the truth rather than compared with the webhook body,
+  so a quick typo edit does not drop the command. Comments whose first word is not `terraplane`
+  are filtered before any API call, which also removes the head-SHA lookup every PR comment used
+  to cost.
+- Tests: API author and body win, deleted comment ignored, wrong issue ignored, API error fails
+  closed, chatter makes no API calls.
 
 ### PR 6: Apply gates
 
@@ -290,7 +303,18 @@ entry under Unreleased.
 - [x] PR 1 config file loader
 - [x] PR 2 per-agent tokens
 - [x] PR 3 orchestrator-owned routing
-- [ ] PR 4 authorization (open; hardened after security review)
-- [ ] PR 5 verify commands against the GitHub API
-- [ ] PR 6 apply gates
-- [ ] PR 7 packaging and docs
+- [x] PR 4 authorization (hardened after security review)
+- [x] PR 5 verify commands against the GitHub API
+- [x] PR 6 apply gates (`approved`, `mergeable`, `undiverged`, `checks_green`, open PR)
+- [x] PR 7 packaging and docs (`docs/multi-team.md` is the user-facing reference)
+
+## Follow-ups not in this plan
+
+- Hold the stack lock from apply until the PR merges or closes (Atlantis behaviour), needs a
+  `pull_request` closed webhook.
+- `automerge` after a successful apply so `main` catches up immediately.
+- Scheduled drift plans per stack against `main`.
+- Startup probe for `read:org` so team-based permissions cannot deny silently.
+- Pagination for reviews and check runs beyond 100.
+- Upstreaming: PRs 1 to 7 are individually upstreamable in order; each branch starts from the
+  previous PR's commit.
