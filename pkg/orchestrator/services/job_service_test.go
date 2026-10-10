@@ -1008,3 +1008,230 @@ func (s *JobServiceSuite) TestHandlePeriodicResultRejectsJobNotRunning() {
 	err := s.svc.HandlePeriodicResult(context.Background(), "job-1", "agent-a", "out")
 	require.ErrorIs(s.T(), err, services.ErrJobInvalidStatus)
 }
+
+// --- apply gates ---
+
+func (s *JobServiceSuite) gatedService(gates string) services.JobService {
+	cfgFile, err := orchestratorconfig.Parse([]byte(`
+agents:
+  agent-prod:
+    token_env: T1
+repos:
+  acme/infra:
+    agent: agent-prod
+    apply_requires:
+`+gates), func(key string) string { return key })
+	require.NoError(s.T(), err)
+	return services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
+		OrchestratorJobLease: time.Minute,
+	}, cfgFile, authz.AllowAll())
+}
+
+func openPR(state string) scm.PullRequest {
+	return scm.PullRequest{Open: true, MergeableState: state, HeadSHA: "abc123", BaseRef: "main"}
+}
+
+func (s *JobServiceSuite) expectPR(pr scm.PullRequest) {
+	s.scm.EXPECT().GetPullRequest(gomock.Any(), "acme/infra", 42).Return(pr, nil)
+}
+
+func (s *JobServiceSuite) expectDenied(reasons ...string) {
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, feedback.DeniedComment("apply", reasons)).Return(0, nil)
+}
+
+func (s *JobServiceSuite) TestApplyGatesPassQueuesJobs() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectPR(openPR("clean"))
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(true, nil)
+	s.scm.EXPECT().CommitsBehind(gomock.Any(), "acme/infra", "main", "abc123").Return(0, nil)
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(true, nil)
+	s.expectLockCreate("a", "stacks/a", nil)
+	s.expectUpsert("a", "stacks/a", "apply", "agent-prod", "job-a")
+
+	err := s.gatedService("      approved: true\n      mergeable: true\n      undiverged: true\n      checks_green: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyOnClosedPullRequestIsBlockedEvenWithoutGates() {
+	wh := webhook("terraplane apply")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	pr := openPR("clean")
+	pr.Open = false
+	s.expectPR(pr)
+	s.expectDenied("apply requires pull request #42 to be open")
+	// No locks, no upserts.
+
+	err := s.gatedService("      {}\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateApprovalFailsBlocksEveryStack() {
+	wh := webhook("terraplane apply")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectPR(openPR("clean"))
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(false, nil)
+	s.expectDenied("apply requires an approved review on pull request #42")
+
+	err := s.gatedService("      approved: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateMergeableStates() {
+	cases := map[string]string{
+		"clean":     "",
+		"unstable":  "",
+		"has_hooks": "",
+		"dirty":     "apply requires pull request #42 to have no merge conflicts",
+		"draft":     "apply requires pull request #42 not to be a draft",
+		"blocked":   "apply requires pull request #42 to satisfy its branch protection rules",
+		"behind":    "apply requires pull request #42 to be up to date with its base branch",
+		"unknown":   "GitHub has not finished computing whether pull request #42 is mergeable; try again shortly",
+		"":          "GitHub has not finished computing whether pull request #42 is mergeable; try again shortly",
+		"weird":     "apply requires pull request #42 to be mergeable (GitHub reports weird)",
+	}
+	for state, reason := range cases {
+		s.SetupTest()
+		wh := webhook("terraplane apply -s a")
+		s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+		s.expectPR(openPR(state))
+		if reason == "" {
+			s.expectLockCreate("a", "stacks/a", nil)
+			s.expectUpsert("a", "stacks/a", "apply", "agent-prod", "job-a")
+		} else {
+			s.expectDenied(reason)
+		}
+
+		err := s.gatedService("      mergeable: true\n").CreatePendingJobs(context.Background(), wh)
+		require.NoError(s.T(), err, state)
+		s.ctrl.Finish()
+	}
+}
+
+func (s *JobServiceSuite) TestApplyGateUndivergedBlocksBranchBehindBase() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectPR(openPR("clean"))
+	s.scm.EXPECT().CommitsBehind(gomock.Any(), "acme/infra", "main", "abc123").Return(3, nil)
+	s.expectDenied("apply requires pull request #42 to contain the latest main commit (it is 3 behind)")
+
+	err := s.gatedService("      undiverged: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateChecksFailBlocksEveryStack() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectPR(openPR("clean"))
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, nil)
+	s.expectDenied("apply requires all checks on commit abc123 to pass")
+
+	err := s.gatedService("      checks_green: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesReportEveryFailedGate() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectPR(openPR("dirty"))
+	s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(false, nil)
+	s.scm.EXPECT().CommitsBehind(gomock.Any(), "acme/infra", "main", "abc123").Return(1, nil)
+	s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, nil)
+	s.expectDenied(
+		"apply requires an approved review on pull request #42",
+		"apply requires pull request #42 to have no merge conflicts",
+		"apply requires pull request #42 to contain the latest main commit (it is 1 behind)",
+		"apply requires all checks on commit abc123 to pass",
+	)
+
+	err := s.gatedService("      approved: true\n      mergeable: true\n      undiverged: true\n      checks_green: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesNotConfiguredOnlyCheckOpen() {
+	// Only GetPullRequest is expected: no review, compare, or checks lookups.
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectPR(openPR("dirty"))
+	s.expectLockCreate("a", "stacks/a", nil)
+	s.expectUpsert("a", "stacks/a", "apply", "agent-prod", "job-a")
+
+	err := s.gatedService("      {}\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesDoNotApplyToPlan() {
+	wh := webhook("terraplane plan -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectUpsert("a", "stacks/a", "plan", "agent-prod", "job-a")
+
+	err := s.gatedService("      approved: true\n      mergeable: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGatesSkippedWithoutOrchestratorConfig() {
+	// Legacy mode: no pull request fetch at all.
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.expectLockCreate("a", "stacks/a", nil)
+	s.expectUpsert("a", "stacks/a", "apply", "agent-a", "job-a")
+
+	err := s.svc.CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestApplyGateLookupErrorsFailClosed() {
+	cases := map[string]func(){
+		"failed to fetch pull request": func() {
+			s.scm.EXPECT().GetPullRequest(gomock.Any(), "acme/infra", 42).Return(scm.PullRequest{}, errors.New("github down"))
+		},
+		"failed to check review approval": func() {
+			s.expectPR(openPR("clean"))
+			s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(false, errors.New("github down"))
+		},
+		"failed to compare pull request": func() {
+			s.expectPR(openPR("clean"))
+			s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(true, nil)
+			s.scm.EXPECT().CommitsBehind(gomock.Any(), "acme/infra", "main", "abc123").Return(0, errors.New("github down"))
+		},
+		"failed to check commit status": func() {
+			s.expectPR(openPR("clean"))
+			s.scm.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(true, nil)
+			s.scm.EXPECT().CommitsBehind(gomock.Any(), "acme/infra", "main", "abc123").Return(0, nil)
+			s.scm.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, errors.New("github down"))
+		},
+	}
+	for want, expect := range cases {
+		s.SetupTest()
+		wh := webhook("terraplane apply -s a")
+		s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+		expect()
+
+		err := s.gatedService("      approved: true\n      undiverged: true\n      checks_green: true\n").CreatePendingJobs(context.Background(), wh)
+		require.Error(s.T(), err, want)
+		require.Contains(s.T(), err.Error(), want)
+		s.ctrl.Finish()
+	}
+}
+
+func (s *JobServiceSuite) TestApplyGatesRunAfterAuthorization() {
+	// Intention: an unauthorized user must not trigger any pull request lookups.
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionApply).Return(false, "no", nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), "acme/infra", 42, gomock.Any()).Return(0, nil)
+
+	cfgFile, err := orchestratorconfig.Parse([]byte(`
+agents:
+  agent-prod:
+    token_env: T1
+repos:
+  acme/infra:
+    agent: agent-prod
+    apply_requires:
+      approved: true
+`), func(key string) string { return key })
+	require.NoError(s.T(), err)
+	svc := services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{}, cfgFile, s.authz)
+	require.NoError(s.T(), svc.CreatePendingJobs(context.Background(), wh))
+}

@@ -39,6 +39,11 @@ repos:
     permissions:
       plan: ["@acme/platform"]
       apply: ["@acme/platform-leads"]
+    apply_requires:
+      approved: true
+      mergeable: true
+      undiverged: true
+      checks_green: true
   acme/empty:
     agent: agent-data
 `
@@ -158,16 +163,6 @@ func TestValidate(t *testing.T) {
 			name: "repo unknown agent",
 			yaml: "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: nope\n",
 			want: `repo "acme/infra" references unknown agent "nope"`,
-		},
-		{
-			name: "apply_requires approved not supported yet",
-			yaml: minimalYAML + "    apply_requires:\n      approved: true\n",
-			want: `repo "acme/infra": apply_requires is not supported yet`,
-		},
-		{
-			name: "apply_requires checks_green not supported yet",
-			yaml: minimalYAML + "    apply_requires:\n      checks_green: true\n",
-			want: `repo "acme/infra": apply_requires is not supported yet`,
 		},
 		{
 			name: "repo invalid permission entry",
@@ -374,7 +369,8 @@ func TestPermissionsFor(t *testing.T) {
 
 func TestApplyRequiresFor(t *testing.T) {
 	cfg := parseValid(t)
-	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/platform"))
+	require.Equal(t, orchestratorconfig.ApplyRequires{Approved: true, Mergeable: true, Undiverged: true, ChecksGreen: true}, cfg.ApplyRequiresFor("acme/platform"))
+	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/infra"))
 	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/unknown"))
 }
 

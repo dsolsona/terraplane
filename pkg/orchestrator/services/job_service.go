@@ -119,6 +119,17 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	if err != nil {
 		return err
 	}
+	if action == string(models.JobActionApply) && len(resolvedStacks) > 0 {
+		blocked, err := j.applyGateFailures(ctx, webhook)
+		if err != nil {
+			return err
+		}
+		if len(blocked) > 0 {
+			denied = append(denied, blocked...)
+			resolvedStacks = nil
+		}
+	}
+
 	denied = append(unbound, denied...)
 	if len(denied) > 0 {
 		publishDeniedComment(ctx, j.logger, j.scmPublisher, webhook.RepositorySlug, webhook.PRNumber, authz.Action(action), denied)
@@ -172,6 +183,97 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	}
 
 	return nil
+}
+
+// applyGateFailures evaluates the repo's apply_requires gates and returns a
+// reason for each gate that is not met. Gates apply to the whole command, so
+// a failure blocks every stack. A lookup error fails closed. With an
+// orchestrator config the pull request must also be open; without one no
+// gate runs so legacy behaviour is unchanged.
+func (j *jobService) applyGateFailures(ctx context.Context, webhook *scm.Webhook) ([]string, error) {
+	if !j.orchestratorConfig.Enabled() {
+		return nil, nil
+	}
+	repo, prNumber := webhook.RepositorySlug, webhook.PRNumber
+	gates := j.orchestratorConfig.ApplyRequiresFor(repo)
+	var reasons []string
+
+	pr, err := j.scmProvider.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch pull request for repository %s pull request #%d: %w", repo, prNumber, err)
+	}
+	if !pr.Open {
+		reasons = append(reasons, fmt.Sprintf("apply requires pull request #%d to be open", prNumber))
+	}
+
+	if gates.Approved {
+		approved, err := j.scmProvider.PullRequestApproved(ctx, repo, prNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check review approval for repository %s pull request #%d: %w", repo, prNumber, err)
+		}
+		if !approved {
+			reasons = append(reasons, fmt.Sprintf("apply requires an approved review on pull request #%d", prNumber))
+		}
+	}
+
+	if gates.Mergeable {
+		if reason := mergeableReason(pr, prNumber); reason != "" {
+			reasons = append(reasons, reason)
+		}
+	}
+
+	if gates.Undiverged {
+		behind, err := j.scmProvider.CommitsBehind(ctx, repo, pr.BaseRef, webhook.CommitSHA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compare pull request #%d with %s in repository %s: %w", prNumber, pr.BaseRef, repo, err)
+		}
+		if behind > 0 {
+			reasons = append(reasons, fmt.Sprintf("apply requires pull request #%d to contain the latest %s commit (it is %d behind)", prNumber, pr.BaseRef, behind))
+		}
+	}
+
+	if gates.ChecksGreen {
+		green, err := j.scmProvider.ChecksGreen(ctx, repo, webhook.CommitSHA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check commit status for repository %s commit %s: %w", repo, webhook.CommitSHA, err)
+		}
+		if !green {
+			reasons = append(reasons, fmt.Sprintf("apply requires all checks on commit %s to pass", webhook.CommitSHA))
+		}
+	}
+
+	for _, reason := range reasons {
+		j.logger.Warn(
+			"Blocked apply by gate",
+			"repo", repo,
+			"pr", prNumber,
+			"user", webhook.TriggeringUser,
+			"reason", reason,
+		)
+	}
+	return reasons, nil
+}
+
+// mergeableReason mirrors Atlantis: clean, unstable, and has_hooks count as
+// mergeable. GitHub reports unknown for a few seconds after a push, which
+// fails closed with a hint to retry.
+func mergeableReason(pr scm.PullRequest, prNumber int) string {
+	switch pr.MergeableState {
+	case "clean", "unstable", "has_hooks":
+		return ""
+	case "dirty":
+		return fmt.Sprintf("apply requires pull request #%d to have no merge conflicts", prNumber)
+	case "draft":
+		return fmt.Sprintf("apply requires pull request #%d not to be a draft", prNumber)
+	case "blocked":
+		return fmt.Sprintf("apply requires pull request #%d to satisfy its branch protection rules", prNumber)
+	case "behind":
+		return fmt.Sprintf("apply requires pull request #%d to be up to date with its base branch", prNumber)
+	case "unknown", "":
+		return fmt.Sprintf("GitHub has not finished computing whether pull request #%d is mergeable; try again shortly", prNumber)
+	default:
+		return fmt.Sprintf("apply requires pull request #%d to be mergeable (GitHub reports %s)", prNumber, pr.MergeableState)
+	}
 }
 
 // agentFor returns the agent that runs stack. The orchestrator config owns

@@ -53,9 +53,13 @@ type Permissions struct {
 	Unlock []string `yaml:"unlock"`
 }
 
+// ApplyRequires are the gates every apply in a repo must pass. The names
+// follow Atlantis so teams can carry their settings over.
 type ApplyRequires struct {
-	Approved    bool `yaml:"approved"`
-	ChecksGreen bool `yaml:"checks_green"`
+	Approved    bool `yaml:"approved"`     // at least one approval, no outstanding change requests
+	Mergeable   bool `yaml:"mergeable"`    // no conflicts, not a draft, branch protection satisfied
+	Undiverged  bool `yaml:"undiverged"`   // head contains the latest base commit
+	ChecksGreen bool `yaml:"checks_green"` // every status and check run on the head passed
 }
 
 // New loads the file named by ORCHESTRATOR_CONFIG_PATH, or returns a disabled
@@ -129,10 +133,6 @@ func (c *ConfigFile) Validate() error {
 		}
 		if _, ok := c.Agents[repo.Agent]; !ok {
 			return fmt.Errorf("repo %q references unknown agent %q", slug, repo.Agent)
-		}
-		if repo.ApplyRequires.Approved || repo.ApplyRequires.ChecksGreen {
-			// TODO: remove once apply gates are enforced; until then a set flag must not look like protection.
-			return fmt.Errorf("repo %q: apply_requires is not supported yet", slug)
 		}
 		if err := repo.Permissions.validate(fmt.Sprintf("repo %q", slug)); err != nil {
 			return err

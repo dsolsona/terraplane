@@ -29,6 +29,10 @@ type Client interface {
 	ReactToComment(ctx context.Context, repo string, commentID int, reaction string) error
 	TeamMember(ctx context.Context, org string, team string, user string) (bool, error)
 	GetIssueComment(ctx context.Context, repo string, commentID int) (scm.IssueComment, error)
+	PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error)
+	ChecksGreen(ctx context.Context, repo string, sha string) (bool, error)
+	GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error)
+	CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error)
 }
 
 type client struct {
@@ -241,6 +245,118 @@ func (c *client) GetIssueComment(ctx context.Context, repo string, commentID int
 		respBody, _ := io.ReadAll(res.Body)
 		return scm.IssueComment{}, fmt.Errorf("GitHub API request to fetch comment #%d in repository %s returned unexpected status %s: %s", commentID, repo, res.Status, strings.TrimSpace(string(respBody)))
 	}
+}
+
+// PullRequestApproved folds the review list down to each reviewer's latest
+// verdict. COMMENTED reviews do not change a verdict; DISMISSED clears it.
+// Only the first 100 reviews are considered; pagination is not implemented.
+func (c *client) PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error) {
+	u := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews?per_page=100", c.apiURL, repo, prNumber)
+	var reviews []struct {
+		State string `json:"state"`
+		User  struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := c.getJSON(ctx, u, &reviews); err != nil {
+		return false, fmt.Errorf("failed to fetch reviews for repository %s PR #%d: %w", repo, prNumber, err)
+	}
+
+	latest := make(map[string]string) // reviewer → latest verdict
+	for _, review := range reviews {
+		switch review.State {
+		case "APPROVED", "CHANGES_REQUESTED":
+			latest[review.User.Login] = review.State
+		case "DISMISSED":
+			delete(latest, review.User.Login)
+		}
+	}
+
+	approved := false
+	for _, state := range latest {
+		if state == "CHANGES_REQUESTED" {
+			return false, nil
+		}
+		approved = true
+	}
+	return approved, nil
+}
+
+// ChecksGreen requires the combined commit status to be success (or absent)
+// and every check run to have completed without failing. Only the first 100
+// check runs are considered; pagination is not implemented.
+func (c *client) ChecksGreen(ctx context.Context, repo string, sha string) (bool, error) {
+	statusURL := fmt.Sprintf("%s/repos/%s/commits/%s/status", c.apiURL, repo, sha)
+	var status struct {
+		State      string `json:"state"`
+		TotalCount int    `json:"total_count"`
+	}
+	if err := c.getJSON(ctx, statusURL, &status); err != nil {
+		return false, fmt.Errorf("failed to fetch commit status for repository %s commit %s: %w", repo, sha, err)
+	}
+	if status.TotalCount > 0 && status.State != "success" {
+		return false, nil
+	}
+
+	runsURL := fmt.Sprintf("%s/repos/%s/commits/%s/check-runs?per_page=100", c.apiURL, repo, sha)
+	var runs struct {
+		CheckRuns []struct {
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"check_runs"`
+	}
+	if err := c.getJSON(ctx, runsURL, &runs); err != nil {
+		return false, fmt.Errorf("failed to fetch check runs for repository %s commit %s: %w", repo, sha, err)
+	}
+	for _, run := range runs.CheckRuns {
+		if run.Status != "completed" {
+			return false, nil
+		}
+		switch run.Conclusion {
+		case "success", "neutral", "skipped":
+		default:
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (c *client) GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error) {
+	u := fmt.Sprintf("%s/repos/%s/pulls/%d", c.apiURL, repo, prNumber)
+	var resp struct {
+		State          string `json:"state"`
+		Draft          bool   `json:"draft"`
+		MergeableState string `json:"mergeable_state"`
+		Head           struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	}
+	if err := c.getJSON(ctx, u, &resp); err != nil {
+		return scm.PullRequest{}, fmt.Errorf("failed to fetch pull request for repository %s PR #%d: %w", repo, prNumber, err)
+	}
+	return scm.PullRequest{
+		Open:           resp.State == "open",
+		Draft:          resp.Draft,
+		MergeableState: resp.MergeableState,
+		HeadSHA:        resp.Head.SHA,
+		BaseRef:        resp.Base.Ref,
+	}, nil
+}
+
+// CommitsBehind uses the compare endpoint: behind_by counts commits on base
+// that head does not contain.
+func (c *client) CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error) {
+	u := fmt.Sprintf("%s/repos/%s/compare/%s...%s", c.apiURL, repo, base, head)
+	var resp struct {
+		BehindBy int `json:"behind_by"`
+	}
+	if err := c.getJSON(ctx, u, &resp); err != nil {
+		return 0, fmt.Errorf("failed to compare %s with %s in repository %s: %w", head, base, repo, err)
+	}
+	return resp.BehindBy, nil
 }
 
 // TeamMember checks org team membership. GitHub answers 404 for non-members

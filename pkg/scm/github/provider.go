@@ -70,6 +70,22 @@ func (p *provider) TeamMember(ctx context.Context, org string, team string, user
 	return p.client.TeamMember(ctx, org, team, user)
 }
 
+func (p *provider) PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error) {
+	return p.client.PullRequestApproved(ctx, repo, prNumber)
+}
+
+func (p *provider) ChecksGreen(ctx context.Context, repo string, sha string) (bool, error) {
+	return p.client.ChecksGreen(ctx, repo, sha)
+}
+
+func (p *provider) GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error) {
+	return p.client.GetPullRequest(ctx, repo, prNumber)
+}
+
+func (p *provider) CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error) {
+	return p.client.CommitsBehind(ctx, repo, base, head)
+}
+
 func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

@@ -41,6 +41,36 @@ func (m *MockClient) EXPECT() *MockClientMockRecorder {
 	return m.recorder
 }
 
+// ChecksGreen mocks base method.
+func (m *MockClient) ChecksGreen(ctx context.Context, repo, sha string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ChecksGreen", ctx, repo, sha)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ChecksGreen indicates an expected call of ChecksGreen.
+func (mr *MockClientMockRecorder) ChecksGreen(ctx, repo, sha any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChecksGreen", reflect.TypeOf((*MockClient)(nil).ChecksGreen), ctx, repo, sha)
+}
+
+// CommitsBehind mocks base method.
+func (m *MockClient) CommitsBehind(ctx context.Context, repo, base, head string) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CommitsBehind", ctx, repo, base, head)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CommitsBehind indicates an expected call of CommitsBehind.
+func (mr *MockClientMockRecorder) CommitsBehind(ctx, repo, base, head any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CommitsBehind", reflect.TypeOf((*MockClient)(nil).CommitsBehind), ctx, repo, base, head)
+}
+
 // GetCommitSHA mocks base method.
 func (m *MockClient) GetCommitSHA(ctx context.Context, repo string, prNumber int) (string, error) {
 	m.ctrl.T.Helper()
@@ -84,6 +114,36 @@ func (m *MockClient) GetIssueComment(ctx context.Context, repo string, commentID
 func (mr *MockClientMockRecorder) GetIssueComment(ctx, repo, commentID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIssueComment", reflect.TypeOf((*MockClient)(nil).GetIssueComment), ctx, repo, commentID)
+}
+
+// GetPullRequest mocks base method.
+func (m *MockClient) GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPullRequest", ctx, repo, prNumber)
+	ret0, _ := ret[0].(scm.PullRequest)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPullRequest indicates an expected call of GetPullRequest.
+func (mr *MockClientMockRecorder) GetPullRequest(ctx, repo, prNumber any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPullRequest", reflect.TypeOf((*MockClient)(nil).GetPullRequest), ctx, repo, prNumber)
+}
+
+// PullRequestApproved mocks base method.
+func (m *MockClient) PullRequestApproved(ctx context.Context, repo string, prNumber int) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PullRequestApproved", ctx, repo, prNumber)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PullRequestApproved indicates an expected call of PullRequestApproved.
+func (mr *MockClientMockRecorder) PullRequestApproved(ctx, repo, prNumber any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PullRequestApproved", reflect.TypeOf((*MockClient)(nil).PullRequestApproved), ctx, repo, prNumber)
 }
 
 // ReactToComment mocks base method.

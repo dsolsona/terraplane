@@ -312,3 +312,26 @@ func TestParseIssueURL(t *testing.T) {
 		require.Error(t, err, raw)
 	}
 }
+
+func (s *ProviderSuite) TestApplyGatesDelegateToClient() {
+	s.client.EXPECT().PullRequestApproved(gomock.Any(), "acme/infra", 42).Return(true, nil)
+	approved, err := s.prov.PullRequestApproved(context.Background(), "acme/infra", 42)
+	require.NoError(s.T(), err)
+	require.True(s.T(), approved)
+
+	s.client.EXPECT().ChecksGreen(gomock.Any(), "acme/infra", "abc123").Return(false, errors.New("boom"))
+	_, err = s.prov.ChecksGreen(context.Background(), "acme/infra", "abc123")
+	require.Error(s.T(), err)
+}
+
+func (s *ProviderSuite) TestPullRequestLookupsDelegateToClient() {
+	s.client.EXPECT().GetPullRequest(gomock.Any(), "acme/infra", 42).Return(scm.PullRequest{Open: true}, nil)
+	pr, err := s.prov.GetPullRequest(context.Background(), "acme/infra", 42)
+	require.NoError(s.T(), err)
+	require.True(s.T(), pr.Open)
+
+	s.client.EXPECT().CommitsBehind(gomock.Any(), "acme/infra", "main", "abc123").Return(2, nil)
+	behind, err := s.prov.CommitsBehind(context.Background(), "acme/infra", "main", "abc123")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), 2, behind)
+}
