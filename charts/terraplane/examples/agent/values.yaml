@@ -9,7 +9,10 @@
 #   kubectl -n terraplane-agents create secret generic agent-prod-ssh \
 #     --from-file=ssh-private-key=./id_ed25519_prod
 #
-# SHARED_AUTH_TOKEN must match the orchestrator secret.
+# SHARED_AUTH_TOKEN must match the orchestrator secret. In multi-team mode
+# (orchestrator.config set) give each agent its own Secret and token instead,
+# referenced from agents[].envFrom, matching agents.<name>.token_env on the
+# orchestrator.
 #
 # Install:
 #   helm install terraplane-agents oci://ghcr.io/terraplane-org/charts/terraplane \

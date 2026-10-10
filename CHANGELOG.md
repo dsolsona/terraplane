@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `repos.<slug>.apply_requires` in the orchestrator config gates every `apply` in a repo, using Atlantis's names: `approved` (an approving review with no outstanding change requests), `mergeable` (GitHub reports the PR as mergeable: no conflicts, not a draft, branch protection satisfied), `undiverged` (the PR head contains the latest base branch commit), and `checks_green` (every status and check run on the head passed). With an orchestrator config an apply also always requires the pull request to be open. Failed gates are reported in the denial comment and nothing is queued.
 
+- Helm: `orchestrator.config` renders the orchestrator config to a ConfigMap, mounts it, and sets `ORCHESTRATOR_CONFIG_PATH`; new `examples/multi-team`. Reference in `docs/multi-team.md`.
+
 ### Changed
 
 - After verifying the webhook signature, the orchestrator re-reads each command comment from the GitHub API and acts on the author, body, and pull request as GitHub reports them rather than as the webhook body claims. Deleted comments are ignored. Comments whose first word is not `terraplane` no longer cause any API calls.

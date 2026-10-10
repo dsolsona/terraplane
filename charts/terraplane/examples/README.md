@@ -7,6 +7,7 @@ Copy-pasteable values for the [Terraplane chart](../). Secrets are created out o
 | [orchestrator](orchestrator/) | Public orchestrator only; agents run elsewhere |
 | [agent](agent/) | Private agents only; orchestrator URL is remote |
 | [combined](combined/) | Lab / single cluster: orchestrator + agent together |
+| [multi-team](multi-team/) | Shared orchestrator, one agent and one permission set per team |
 
 ## Orchestrator
 
@@ -45,5 +46,9 @@ helm install terraplane oci://ghcr.io/terraplane-org/charts/terraplane \
   -n terraplane \
   -f combined/values.yaml
 ```
+
+## Multi-team
+
+Same install as the orchestrator example with `-f multi-team/values.yaml`. Agent releases use `agent/values.yaml` with a different `SHARED_AUTH_TOKEN` per agent (one Secret per agent referenced from `agents[].envFrom`). See [docs/multi-team.md](../../../docs/multi-team.md).
 
 From a local checkout you can also `-f charts/terraplane/examples/<name>/values.yaml` against a chart path or OCI package.

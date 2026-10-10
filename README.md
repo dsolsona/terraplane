@@ -23,6 +23,10 @@ Terraform belongs in the pull request, and the runner belongs inside your networ
 
 Stacks live under environments in `terraplane.yaml` and route work to the right agent (`agent` on the environment, optional per-stack override). Details: [Why Terraplane](https://terraplane.io/docs/why), [How it works](https://terraplane.io/docs/how-it-works).
 
+## Several teams, one orchestrator
+
+Set `ORCHESTRATOR_CONFIG_PATH` to a config file and terraplane gains per-agent tokens, orchestrator-owned routing of stacks to agents, per-repo and per-stack permissions for `plan` / `apply` / `unlock` by GitHub user or team, and Atlantis-style apply gates (`approved`, `mergeable`, `undiverged`, `checks_green`). Without the file nothing changes. See [docs/multi-team.md](docs/multi-team.md).
+
 ## Get started
 
 **[Quickstart](https://terraplane.io/docs/quickstart)** is the path from zero to a PR plan. Everything else lives in the [docs](https://terraplane.io/docs) — configuration, deployment, local Make targets.

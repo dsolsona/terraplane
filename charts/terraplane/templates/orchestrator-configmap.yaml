@@ -1,0 +1,13 @@
+{{- if and .Values.orchestrator.enabled .Values.orchestrator.config }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "terraplane.fullname" . }}-orchestrator-config
+  namespace: {{ include "terraplane.namespace" . }}
+  labels:
+    {{- include "terraplane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+data:
+  orchestrator.yaml: |
+    {{- toYaml .Values.orchestrator.config | nindent 4 }}
+{{- end }}

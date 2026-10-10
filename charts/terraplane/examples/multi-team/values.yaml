@@ -1,0 +1,64 @@
+# Orchestrator release for several teams sharing one orchestrator, each with
+# its own agent and its own permissions. Agents are installed separately
+# (see ../agent/values.yaml) with a distinct SHARED_AUTH_TOKEN per agent.
+#
+# Prerequisites:
+#   kubectl create namespace terraplane
+#   kubectl -n terraplane create secret generic terraplane-orchestrator \
+#     --from-literal=DATABASE_URL='postgres://user:pass@host:5432/terraplane?sslmode=require' \
+#     --from-literal=DATABASE_DRIVER=postgres \
+#     --from-literal=ORCHESTRATOR_GITHUB_ACCESS_TOKEN='ghp_...' \
+#     --from-literal=ORCHESTRATOR_GITHUB_WEBHOOK_SECRET='...' \
+#     --from-literal=AGENT_TOKEN_PROD="$(openssl rand -hex 32)" \
+#     --from-literal=AGENT_TOKEN_PLATFORM="$(openssl rand -hex 32)"
+#
+# ORCHESTRATOR_GITHUB_ACCESS_TOKEN needs read:org (classic) or organisation
+# Members: read (fine-grained) for @org/team permission entries to resolve.
+# SHARED_AUTH_TOKEN is not needed on the orchestrator in this mode.
+#
+# Install:
+#   helm install terraplane-orch oci://ghcr.io/terraplane-org/charts/terraplane \
+#     --version 0.3.1 -n terraplane -f values.yaml
+
+orchestrator:
+  enabled: true
+  envFrom:
+    - secretRef:
+        name: terraplane-orchestrator
+  ingress:
+    enabled: true
+    hosts:
+      - host: terraplane.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+
+  # Rendered to a ConfigMap and mounted; ORCHESTRATOR_CONFIG_PATH is set for you.
+  # See docs/multi-team.md for the full reference.
+  config:
+    agents:
+      agent-prod:
+        token_env: AGENT_TOKEN_PROD
+      agent-platform:
+        token_env: AGENT_TOKEN_PLATFORM
+    repos:
+      acme/infra:
+        agent: agent-prod
+        permissions:
+          plan: ["@acme/engineering"]
+          apply: ["alice"]
+        apply_requires:
+          approved: true
+          mergeable: true
+      acme/platform:
+        agent: agent-platform
+        permissions:
+          plan: ["@acme/platform"]
+          apply: ["@acme/platform-leads"]
+        apply_requires:
+          approved: true
+          mergeable: true
+          undiverged: true
+          checks_green: true
+
+agents: []

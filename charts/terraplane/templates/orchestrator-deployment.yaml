@@ -15,6 +15,10 @@ spec:
       app.kubernetes.io/component: orchestrator
   template:
     metadata:
+      {{- if .Values.orchestrator.config }}
+      annotations:
+        checksum/orchestrator-config: {{ toYaml .Values.orchestrator.config | sha256sum }}
+      {{- end }}
       labels:
         {{- include "terraplane.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: orchestrator
@@ -40,6 +44,10 @@ spec:
               value: "0.0.0.0"
             - name: ORCHESTRATOR_LISTEN_PORT
               value: {{ .Values.orchestrator.service.port | quote }}
+            {{- if .Values.orchestrator.config }}
+            - name: ORCHESTRATOR_CONFIG_PATH
+              value: /etc/terraplane/config/orchestrator.yaml
+            {{- end }}
             {{- range $key, $value := .Values.orchestrator.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
@@ -48,9 +56,16 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.orchestrator.extraVolumeMounts }}
+          {{- if or .Values.orchestrator.config .Values.orchestrator.extraVolumeMounts }}
           volumeMounts:
+            {{- if .Values.orchestrator.config }}
+            - name: orchestrator-config
+              mountPath: /etc/terraplane/config
+              readOnly: true
+            {{- end }}
+            {{- with .Values.orchestrator.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           livenessProbe:
             httpGet:
@@ -88,8 +103,15 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       {{- end }}
-      {{- with .Values.orchestrator.extraVolumes }}
+      {{- if or .Values.orchestrator.config .Values.orchestrator.extraVolumes }}
       volumes:
+        {{- if .Values.orchestrator.config }}
+        - name: orchestrator-config
+          configMap:
+            name: {{ include "terraplane.fullname" . }}-orchestrator-config
+        {{- end }}
+        {{- with .Values.orchestrator.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
 {{- end }}
