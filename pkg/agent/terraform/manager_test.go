@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
 
+	"github.com/xyzjace/terraplane/config"
 	"github.com/xyzjace/terraplane/pkg/agent/terraform"
 	"github.com/xyzjace/terraplane/pkg/agent/terraform/mock_terraform"
 	"github.com/xyzjace/terraplane/pkg/log"
@@ -42,7 +43,10 @@ func (s *ManagerSuite) writeConfig(yaml string) {
 }
 
 func (s *ManagerSuite) mgr(defaultVer string) terraform.Manager {
-	return terraform.NewManagerWith(log.Noop(), defaultVer, s.vm, s.run)
+	return terraform.NewManagerWith(log.Noop(), terraform.ToolTerraform, map[terraform.Tool]string{
+		terraform.ToolTerraform: defaultVer,
+		terraform.ToolTofu:      "1.11.5",
+	}, s.vm, s.run)
 }
 
 func (s *ManagerSuite) TestRunPlanHappyPath() {
@@ -56,11 +60,11 @@ environments:
         tool_version: 1.5.0
 `)
 	stackDir := filepath.Join(s.ws, "stacks/stg")
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.5.0").Return("/bin/terraform", nil)
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.5.0").Return("/bin/terraform", nil)
 	s.run.EXPECT().Init(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return(nil)
 	s.run.EXPECT().Plan(gomock.Any(), "/bin/terraform", stackDir, "-target=x", gomock.Any()).Return("plan out", nil)
 
-	out, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "-target=x", nil)
+	out, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "-target=x", nil)
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), "plan out", out)
 }
@@ -76,11 +80,11 @@ environments:
         tool_version: 1.5.0
 `)
 	stackDir := filepath.Join(s.ws, "stacks/stg")
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.8.0").Return("/bin/terraform", nil)
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.8.0").Return("/bin/terraform", nil)
 	s.run.EXPECT().Init(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return(nil)
 	s.run.EXPECT().Plan(gomock.Any(), "/bin/terraform", stackDir, "", gomock.Any()).Return("ok", nil)
 
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "1.8.0", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "1.8.0", "", nil)
 	require.NoError(s.T(), err)
 }
 
@@ -94,11 +98,11 @@ environments:
         dir: stacks/stg
 `)
 	stackDir := filepath.Join(s.ws, "stacks/stg")
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.9.0").Return("/bin/terraform", nil)
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.9.0").Return("/bin/terraform", nil)
 	s.run.EXPECT().Init(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return(nil)
 	s.run.EXPECT().Plan(gomock.Any(), "/bin/terraform", stackDir, "", gomock.Any()).Return("ok", nil)
 
-	_, err := s.mgr("1.9.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.9.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.NoError(s.T(), err)
 }
 
@@ -112,11 +116,11 @@ environments:
         dir: stacks/stg
 `)
 	stackDir := filepath.Join(s.ws, "stacks/stg")
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.9.0").Return("/bin/terraform", nil)
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.9.0").Return("/bin/terraform", nil)
 	s.run.EXPECT().Init(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return(nil)
 	s.run.EXPECT().Plan(gomock.Any(), "/bin/terraform", stackDir, "", gomock.Any()).Return("ok", nil)
 
-	_, err := s.mgr("1.9.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.9.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.NoError(s.T(), err)
 }
 
@@ -129,13 +133,13 @@ environments:
       - name: other
         dir: stacks/other
 `)
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), `stack "stg" not found`)
 }
 
 func (s *ManagerSuite) TestRunPlanMissingConfig() {
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to read terraplane config")
 }
@@ -149,7 +153,7 @@ environments:
       - name: stg
         dir: stacks/stg
 `)
-	_, err := s.mgr("").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "AGENT_DEFAULT_TERRAFORM_VERSION")
 }
@@ -164,9 +168,9 @@ environments:
         dir: stacks/stg
         tool_version: 1.5.0
 `)
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.5.0").Return("", errors.New("download failed"))
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.5.0").Return("", errors.New("download failed"))
 
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "download failed")
 }
@@ -182,10 +186,10 @@ environments:
         tool_version: 1.5.0
 `)
 	stackDir := filepath.Join(s.ws, "stacks/stg")
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.5.0").Return("/bin/terraform", nil)
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.5.0").Return("/bin/terraform", nil)
 	s.run.EXPECT().Init(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return(errors.New("init failed"))
 
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "init failed")
 }
@@ -201,10 +205,10 @@ environments:
         tool_version: 1.5.0
 `)
 	stackDir := filepath.Join(s.ws, "stacks/stg")
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.5.0").Return("/bin/terraform", nil)
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.5.0").Return("/bin/terraform", nil)
 	s.run.EXPECT().Apply(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return("apply out", nil)
 
-	out, err := s.mgr("1.0.0").RunApply(context.Background(), s.ws, "stg", "", nil)
+	out, err := s.mgr("1.0.0").RunApply(context.Background(), s.ws, "stg", "", "", nil)
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), "apply out", out)
 }
@@ -219,9 +223,9 @@ environments:
         dir: stacks/stg
         tool_version: 1.5.0
 `)
-	s.vm.EXPECT().Ensure(gomock.Any(), "1.5.0").Return("", errors.New("no binary"))
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTerraform, "1.5.0").Return("", errors.New("no binary"))
 
-	_, err := s.mgr("1.0.0").RunApply(context.Background(), s.ws, "stg", "", nil)
+	_, err := s.mgr("1.0.0").RunApply(context.Background(), s.ws, "stg", "", "", nil)
 	require.Error(s.T(), err)
 }
 
@@ -235,7 +239,7 @@ environments:
         dir: ../../outside
         tool_version: 1.5.0
 `)
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "escapes workspace")
 }
@@ -250,7 +254,7 @@ environments:
         dir: %s
         tool_version: 1.5.0
 `, s.T().TempDir()))
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "must be relative")
 }
@@ -268,7 +272,92 @@ environments:
         dir: escape
         tool_version: 1.5.0
 `)
-	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "escapes workspace")
+}
+
+// --- tool selection ---
+
+func (s *ManagerSuite) TestRunPlanStackToolTofuUsesTofuDefaultVersion() {
+	s.writeConfig(`
+environments:
+  - name: default
+    agent: a
+    tool: tofu
+    stacks:
+      - name: stg
+        dir: stacks/stg
+`)
+	stackDir := filepath.Join(s.ws, "stacks/stg")
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTofu, "1.11.5").Return("/bin/tofu", nil)
+	s.run.EXPECT().Init(gomock.Any(), "/bin/tofu", stackDir, gomock.Any()).Return(nil)
+	s.run.EXPECT().Plan(gomock.Any(), "/bin/tofu", stackDir, "", gomock.Any()).Return("ok", nil)
+
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
+	require.NoError(s.T(), err)
+}
+
+func (s *ManagerSuite) TestRunApplyJobToolOverridesStackTool() {
+	s.writeConfig(`
+environments:
+  - name: default
+    agent: a
+    stacks:
+      - name: stg
+        dir: stacks/stg
+        tool: terraform
+        tool_version: 1.5.0
+`)
+	stackDir := filepath.Join(s.ws, "stacks/stg")
+	s.vm.EXPECT().Ensure(gomock.Any(), terraform.ToolTofu, "1.5.0").Return("/bin/tofu", nil)
+	s.run.EXPECT().Apply(gomock.Any(), "/bin/tofu", stackDir, gomock.Any()).Return("applied", nil)
+
+	out, err := s.mgr("1.0.0").RunApply(context.Background(), s.ws, "stg", "tofu", "", nil)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "applied", out)
+}
+
+func (s *ManagerSuite) TestRunPlanRejectsUnknownJobTool() {
+	s.writeConfig(`
+environments:
+  - name: default
+    agent: a
+    stacks:
+      - name: stg
+        dir: stacks/stg
+`)
+	_, err := s.mgr("1.0.0").RunPlan(context.Background(), s.ws, "stg", "pulumi", "", "", nil)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), `unsupported tool "pulumi"`)
+}
+
+func (s *ManagerSuite) TestRunPlanNoTofuVersionConfigured() {
+	s.writeConfig(`
+environments:
+  - name: default
+    agent: a
+    stacks:
+      - name: stg
+        dir: stacks/stg
+        tool: tofu
+`)
+	mgr := terraform.NewManagerWith(log.Noop(), terraform.ToolTerraform, map[terraform.Tool]string{}, s.vm, s.run)
+	_, err := mgr.RunPlan(context.Background(), s.ws, "stg", "", "", "", nil)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), `no tofu version configured for stack "stg"`)
+}
+
+func TestNewManagerDefaultTool(t *testing.T) {
+	_, err := terraform.NewManager(&config.Config{AgentDefaultTool: "pulumi"}, log.Noop())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AGENT_DEFAULT_TOOL")
+
+	mgr, err := terraform.NewManager(&config.Config{AgentDefaultTool: ""}, log.Noop())
+	require.NoError(t, err)
+	require.NotNil(t, mgr)
+
+	mgr, err = terraform.NewManager(&config.Config{AgentDefaultTool: "tofu", AgentDefaultTofuVersion: "1.11.5"}, log.Noop())
+	require.NoError(t, err)
+	require.NotNil(t, mgr)
 }

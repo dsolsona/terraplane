@@ -3,6 +3,7 @@ package terraform
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,51 +18,71 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-var terraformInstallGroup singleflight.Group
+var toolInstallGroup singleflight.Group
 
 type VersionManager interface {
-	Ensure(ctx context.Context, version string) (string, error)
+	// Ensure returns the path of the tool binary at version, downloading it if needed.
+	Ensure(ctx context.Context, tool Tool, version string) (string, error)
 }
 
 //go:generate mockgen -source=version_manager.go -destination=mock_terraform/mock_version_manager.go -package=mock_terraform
 
 type versionManager struct {
-	logger log.Logger
-	binDir string
+	logger          log.Logger
+	binDir          string
+	tofuReleasesURL string
+	httpClient      *http.Client
 }
 
 func NewVersionManager(logger log.Logger, binDir string) VersionManager {
 	if binDir == "" {
 		binDir = filepath.Join(os.TempDir(), "terraplane-terraform")
 	}
-	return &versionManager{logger: logger, binDir: binDir}
+	return &versionManager{
+		logger:          logger,
+		binDir:          binDir,
+		tofuReleasesURL: defaultTofuReleasesURL,
+		httpClient:      &http.Client{},
+	}
 }
 
-func (m *versionManager) Ensure(ctx context.Context, version string) (string, error) {
-	v, err := parseTerraformVersion(version)
+// Terraform binaries keep their historical layout (<binDir>/<version>/terraform)
+// so existing agent work directories stay valid; OpenTofu lives under
+// <binDir>/tofu/<version>/tofu.
+func (m *versionManager) Ensure(ctx context.Context, tool Tool, version string) (string, error) {
+	v, err := parseToolVersion(version)
 	if err != nil {
 		return "", err
 	}
 
-	if err := os.MkdirAll(m.binDir, 0o755); err != nil {
-		return "", fmt.Errorf("failed to create terraform bin directory %q: %w", m.binDir, err)
+	var versionDir, execPath string
+	switch tool {
+	case ToolTerraform:
+		versionDir = filepath.Join(m.binDir, v.String())
+		execPath = filepath.Join(versionDir, product.Terraform.BinaryName())
+	case ToolTofu:
+		versionDir = filepath.Join(m.binDir, "tofu", v.String())
+		execPath = filepath.Join(versionDir, "tofu")
+	default:
+		return "", fmt.Errorf("unsupported tool %q", tool)
 	}
 
-	versionDir := filepath.Join(m.binDir, v.String())
-	execPath := filepath.Join(versionDir, product.Terraform.BinaryName())
-
-	if path, err := existingTerraformBinary(execPath); err == nil {
-		m.logger.Info("Using terraform binary", "version", v.String(), "path", path)
+	if path, err := existingBinary(execPath); err == nil {
+		m.logger.Info("Using tool binary", "tool", tool, "version", v.String(), "path", path)
 		return path, nil
 	}
 
-	result, err, _ := terraformInstallGroup.Do(versionDir, func() (any, error) {
-		if path, err := existingTerraformBinary(execPath); err == nil {
+	result, err, _ := toolInstallGroup.Do(versionDir, func() (any, error) {
+		if path, err := existingBinary(execPath); err == nil {
 			return path, nil
 		}
 
 		if err := os.MkdirAll(versionDir, 0o755); err != nil {
-			return "", fmt.Errorf("failed to create terraform version directory %q: %w", versionDir, err)
+			return "", fmt.Errorf("failed to create tool version directory %q: %w", versionDir, err)
+		}
+
+		if tool == ToolTofu {
+			return installTofu(ctx, m.httpClient, m.tofuReleasesURL, v.String(), versionDir)
 		}
 
 		installer := install.NewInstaller()
@@ -83,35 +104,35 @@ func (m *versionManager) Ensure(ctx context.Context, version string) (string, er
 		return path, nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to ensure terraform %s: %w", v, err)
+		return "", fmt.Errorf("failed to ensure %s %s: %w", tool, v, err)
 	}
 
 	execPath = result.(string)
-	m.logger.Info("Using terraform binary", "version", v.String(), "path", execPath)
+	m.logger.Info("Using tool binary", "tool", tool, "version", v.String(), "path", execPath)
 	return execPath, nil
 }
 
-func existingTerraformBinary(path string) (string, error) {
+func existingBinary(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("terraform binary path %q is a directory", path)
+		return "", fmt.Errorf("tool binary path %q is a directory", path)
 	}
 	return path, nil
 }
 
-func parseTerraformVersion(version string) (*hcversion.Version, error) {
+func parseToolVersion(version string) (*hcversion.Version, error) {
 	version = strings.TrimSpace(version)
 	version = strings.TrimPrefix(version, "v")
 	if version == "" {
-		return nil, fmt.Errorf("terraform version is required")
+		return nil, fmt.Errorf("tool version is required")
 	}
 
 	v, err := hcversion.NewVersion(version)
 	if err != nil {
-		return nil, fmt.Errorf("invalid terraform version %q: %w", version, err)
+		return nil, fmt.Errorf("invalid tool version %q: %w", version, err)
 	}
 	return v, nil
 }

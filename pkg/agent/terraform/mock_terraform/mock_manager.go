@@ -42,31 +42,31 @@ func (m *MockManager) EXPECT() *MockManagerMockRecorder {
 }
 
 // RunApply mocks base method.
-func (m *MockManager) RunApply(ctx context.Context, workspaceDir, stackName, toolVersion string, live io.Writer) (string, error) {
+func (m *MockManager) RunApply(ctx context.Context, workspaceDir, stackName, tool, toolVersion string, live io.Writer) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RunApply", ctx, workspaceDir, stackName, toolVersion, live)
+	ret := m.ctrl.Call(m, "RunApply", ctx, workspaceDir, stackName, tool, toolVersion, live)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RunApply indicates an expected call of RunApply.
-func (mr *MockManagerMockRecorder) RunApply(ctx, workspaceDir, stackName, toolVersion, live any) *gomock.Call {
+func (mr *MockManagerMockRecorder) RunApply(ctx, workspaceDir, stackName, tool, toolVersion, live any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RunApply", reflect.TypeOf((*MockManager)(nil).RunApply), ctx, workspaceDir, stackName, toolVersion, live)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RunApply", reflect.TypeOf((*MockManager)(nil).RunApply), ctx, workspaceDir, stackName, tool, toolVersion, live)
 }
 
 // RunPlan mocks base method.
-func (m *MockManager) RunPlan(ctx context.Context, workspaceDir, stackName, toolVersion, planFlags string, live io.Writer) (string, error) {
+func (m *MockManager) RunPlan(ctx context.Context, workspaceDir, stackName, tool, toolVersion, planFlags string, live io.Writer) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RunPlan", ctx, workspaceDir, stackName, toolVersion, planFlags, live)
+	ret := m.ctrl.Call(m, "RunPlan", ctx, workspaceDir, stackName, tool, toolVersion, planFlags, live)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RunPlan indicates an expected call of RunPlan.
-func (mr *MockManagerMockRecorder) RunPlan(ctx, workspaceDir, stackName, toolVersion, planFlags, live any) *gomock.Call {
+func (mr *MockManagerMockRecorder) RunPlan(ctx, workspaceDir, stackName, tool, toolVersion, planFlags, live any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RunPlan", reflect.TypeOf((*MockManager)(nil).RunPlan), ctx, workspaceDir, stackName, toolVersion, planFlags, live)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RunPlan", reflect.TypeOf((*MockManager)(nil).RunPlan), ctx, workspaceDir, stackName, tool, toolVersion, planFlags, live)
 }

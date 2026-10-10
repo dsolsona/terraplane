@@ -290,3 +290,55 @@ func TestValidateRejectsControlCharacters(t *testing.T) {
 		})
 	}
 }
+
+func TestToolSelection(t *testing.T) {
+	cfg, err := terraplaneconfig.ParseConfigFile([]byte(`
+environments:
+  - name: staging
+    agent: agent-dev
+    tool: Tofu
+    stacks:
+      - name: inherits
+        dir: stacks/a
+      - name: overrides
+        dir: stacks/b
+        tool: terraform
+  - name: production
+    agent: agent-prod
+    stacks:
+      - name: unset
+        dir: stacks/c
+`))
+	require.NoError(t, err)
+	got, err := cfg.ResolveStacks(nil, nil)
+	require.NoError(t, err)
+	byName := map[string]string{}
+	for _, stack := range got {
+		byName[stack.Name] = stack.Tool
+	}
+	require.Equal(t, map[string]string{"inherits": "tofu", "overrides": "terraform", "unset": ""}, byName)
+
+	_, err = terraplaneconfig.ParseConfigFile([]byte(`
+environments:
+  - name: staging
+    agent: agent-dev
+    tool: pulumi
+    stacks:
+      - name: a
+        dir: stacks/a
+`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `environment "staging": unsupported tool "pulumi"`)
+
+	_, err = terraplaneconfig.ParseConfigFile([]byte(`
+environments:
+  - name: staging
+    agent: agent-dev
+    stacks:
+      - name: a
+        dir: stacks/a
+        tool: cdk
+`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `stack "a" in environment "staging": unsupported tool "cdk"`)
+}

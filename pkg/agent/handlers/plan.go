@@ -15,6 +15,7 @@ func (h *Handlers) handlePlan(ctx context.Context, cmd *command.PlanCommand) {
 		"repo", cmd.Repo,
 		"pr", cmd.PRNumber,
 		"commit", cmd.CommitSHA,
+		"tool", cmd.Tool,
 		"plan_flags", cmd.PlanFlags,
 	)
 
@@ -54,7 +55,7 @@ func (h *Handlers) handlePlan(ctx context.Context, cmd *command.PlanCommand) {
 	stop := h.watchOutput(ctx, jobID, out)
 	defer stop()
 
-	output, err := h.terraformManager.RunPlan(ctx, workspaceDir, cmd.Stacks[0], cmd.ToolVersion, cmd.PlanFlags, out)
+	output, err := h.terraformManager.RunPlan(ctx, workspaceDir, cmd.Stacks[0], cmd.Tool, cmd.ToolVersion, cmd.PlanFlags, out)
 	if err != nil {
 		h.logger.Error(
 			"Failed to run terraform plan",
