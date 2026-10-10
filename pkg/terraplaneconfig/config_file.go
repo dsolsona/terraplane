@@ -44,8 +44,9 @@ func ParseConfigFile(data []byte) (*ConfigFile, error) {
 	return &cfg, nil
 }
 
-// Validate checks structural rules: unique stack names, required fields, and
-// that every stack resolves to an agent via stack or environment config.
+// Validate checks structural rules: unique stack names and required fields.
+// Agent assignment is checked separately by ValidateAgents because the
+// orchestrator may own routing instead of this file.
 func (c *ConfigFile) Validate() error {
 	if len(c.Environments) == 0 {
 		return fmt.Errorf("no environments configured")
@@ -80,14 +81,17 @@ func (c *ConfigFile) Validate() error {
 				return fmt.Errorf("stack name %q is not unique (found in environments %q and %q)", stackName, prevEnv, name)
 			}
 			seenStacks[stackName] = name
+		}
+	}
+	return nil
+}
 
-			agent := strings.TrimSpace(stack.Agent)
-			if agent == "" {
-				agent = strings.TrimSpace(env.Agent)
-			}
-			if agent == "" {
-				return fmt.Errorf("stack %q in environment %q has no agent (set agent on the stack or environment)", stackName, name)
-			}
+// ValidateAgents checks that every stack resolves to an agent via stack or
+// environment config. Only required when terraplane.yaml owns routing.
+func (c *ConfigFile) ValidateAgents() error {
+	for _, stack := range c.allResolved() {
+		if stack.Agent == "" {
+			return fmt.Errorf("stack %q in environment %q has no agent (set agent on the stack or environment)", stack.Name, stack.Environment)
 		}
 	}
 	return nil

@@ -132,6 +132,16 @@ func (h *handler) scmWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, webhook := range webhooks {
+		if h.orchestratorConfig.Enabled() && !h.orchestratorConfig.HasRepo(webhook.RepositorySlug) {
+			h.logger.Warn(
+				"Ignoring webhook from repository not listed in the orchestrator config",
+				"repo", webhook.RepositorySlug,
+				"pr", webhook.PRNumber,
+				"user", webhook.TriggeringUser,
+			)
+			continue
+		}
+
 		cmd := command.ParseWebhook(&webhook)
 		if cmd.Kind == command.KindUnknown {
 			h.logger.Debug(

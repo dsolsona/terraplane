@@ -44,12 +44,12 @@ func InitializeOrchestrator() (orchestrator.Manager, error) {
 	}
 	jobRepository := storage.NewJobRepository(db)
 	lockRepository := storage.NewLockRepository(db)
-	jobService := services.NewJobService(logger, jobRepository, lockRepository, provider, publisher, configConfig)
-	unlockService := services.NewUnlockService(logger, provider, publisher, jobRepository, lockRepository)
 	configFile, err := orchestratorconfig.New(configConfig)
 	if err != nil {
 		return nil, err
 	}
+	jobService := services.NewJobService(logger, jobRepository, lockRepository, provider, publisher, configConfig, configFile)
+	unlockService := services.NewUnlockService(logger, provider, publisher, jobRepository, lockRepository)
 	handler := webserver.NewHandler(logger, provider, publisher, jobService, unlockService, configConfig, configFile)
 	server := webserver.NewServer(configConfig, logger, handler)
 	dispatcher := orchestrator.NewDispatcher(configConfig, logger, jobService)

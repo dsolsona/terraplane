@@ -620,3 +620,30 @@ func (s *HandlerSuite) TestWebhookRouteIgnoresAgentTokens() {
 	rec := s.tokenPOST(h, "", "/scm/webhook", `{}`)
 	require.Equal(s.T(), http.StatusOK, rec.Code)
 }
+
+func (s *HandlerSuite) TestWebhookIgnoresRepoNotInOrchestratorConfig() {
+	h := s.newHandlerWithAgentTokens()
+	s.scm.EXPECT().ParseWebhook(gomock.Any()).Return([]scm.Webhook{
+		{RepositorySlug: "acme/unknown", PRNumber: 1, FullCommand: "terraplane plan", TriggeringUser: "jace", CommitSHA: "abc", CommentID: 31},
+		{RepositorySlug: "acme/unknown", PRNumber: 1, FullCommand: "terraplane unlock -s a", TriggeringUser: "jace", CommitSHA: "abc", CommentID: 32},
+		{RepositorySlug: "acme/infra", PRNumber: 2, FullCommand: "terraplane plan", TriggeringUser: "jace", CommitSHA: "abc", CommentID: 33},
+	}, nil)
+	// Only the listed repo is acknowledged.
+	s.publisher.EXPECT().AcknowledgeComment(gomock.Any(), "acme/infra", 2, 33).Return(nil)
+
+	rec := s.tokenPOST(h, "", "/scm/webhook", `{}`)
+	require.Equal(s.T(), http.StatusOK, rec.Code)
+
+	select {
+	case got := <-s.jobs.called:
+		require.Equal(s.T(), "acme/infra", got.RepositorySlug)
+	case <-time.After(2 * time.Second):
+		s.T().Fatal("timed out waiting for CreatePendingJobs")
+	}
+	select {
+	case got := <-s.jobs.called:
+		s.T().Fatalf("CreatePendingJobs should not have been called for %s", got.RepositorySlug)
+	default:
+	}
+	require.Empty(s.T(), s.unlocks.ran)
+}

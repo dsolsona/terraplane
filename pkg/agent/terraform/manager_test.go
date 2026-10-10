@@ -102,6 +102,24 @@ environments:
 	require.NoError(s.T(), err)
 }
 
+func (s *ManagerSuite) TestRunPlanWorksWithoutAgentsInConfig() {
+	// Intention: when the orchestrator owns routing, terraplane.yaml carries no agent fields.
+	s.writeConfig(`
+environments:
+  - name: default
+    stacks:
+      - name: stg
+        dir: stacks/stg
+`)
+	stackDir := filepath.Join(s.ws, "stacks/stg")
+	s.vm.EXPECT().Ensure(gomock.Any(), "1.9.0").Return("/bin/terraform", nil)
+	s.run.EXPECT().Init(gomock.Any(), "/bin/terraform", stackDir, gomock.Any()).Return(nil)
+	s.run.EXPECT().Plan(gomock.Any(), "/bin/terraform", stackDir, "", gomock.Any()).Return("ok", nil)
+
+	_, err := s.mgr("1.9.0").RunPlan(context.Background(), s.ws, "stg", "", "", nil)
+	require.NoError(s.T(), err)
+}
+
 func (s *ManagerSuite) TestRunPlanMissingStack() {
 	s.writeConfig(`
 environments:

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ORCHESTRATOR_CONFIG_PATH` points at an optional orchestrator config file (`agents` and `repos`). When set, each agent is identified by its own bearer token (`agents.<name>.token_env`) instead of `SHARED_AUTH_TOKEN`, and an agent request whose `agent_id` does not match its token is rejected with 403. Without the file nothing changes.
 
+### Changed
+
+- With an orchestrator config, the agent that runs each stack comes from `repos.<slug>.agent` (or `repos.<slug>.stacks.<name>.agent`) instead of `terraplane.yaml`, whose `agent` fields are then ignored and no longer required. Webhooks from repositories not listed under `repos` are ignored.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added
