@@ -14,103 +14,145 @@ import (
 )
 
 type Manager interface {
-	RunPlan(ctx context.Context, workspaceDir, stackName, toolVersion, planFlags string, live io.Writer) (string, error)
-	RunApply(ctx context.Context, workspaceDir, stackName, toolVersion string, live io.Writer) (string, error)
+	RunPlan(ctx context.Context, workspaceDir, stackName, tool, toolVersion, planFlags string, live io.Writer) (string, error)
+	RunApply(ctx context.Context, workspaceDir, stackName, tool, toolVersion string, live io.Writer) (string, error)
 }
 
 //go:generate mockgen -source=manager.go -destination=mock_terraform/mock_manager.go -package=mock_terraform
 
 type manager struct {
-	logger         log.Logger
-	defaultVersion string
-	versionManager VersionManager
-	runner         Runner
+	logger          log.Logger
+	defaultTool     Tool
+	defaultVersions map[Tool]string
+	versionManager  VersionManager
+	runner          Runner
 }
 
-func NewManager(cfg *config.Config, logger log.Logger) Manager {
+func NewManager(cfg *config.Config, logger log.Logger) (Manager, error) {
+	defaultTool, err := ParseTool(cfg.AgentDefaultTool)
+	if err != nil {
+		return nil, fmt.Errorf("AGENT_DEFAULT_TOOL: %w", err)
+	}
+	if defaultTool == "" {
+		defaultTool = ToolTerraform
+	}
 	return NewManagerWith(
 		logger,
-		cfg.AgentDefaultTerraformVersion,
+		defaultTool,
+		map[Tool]string{
+			ToolTerraform: cfg.AgentDefaultTerraformVersion,
+			ToolTofu:      cfg.AgentDefaultTofuVersion,
+		},
 		NewVersionManager(logger, cfg.AgentTerraformBinDir),
 		NewRunner(),
-	)
+	), nil
 }
 
 // NewManagerWith constructs a Manager with explicit dependencies (useful in tests).
-func NewManagerWith(logger log.Logger, defaultVersion string, versionManager VersionManager, runner Runner) Manager {
+func NewManagerWith(logger log.Logger, defaultTool Tool, defaultVersions map[Tool]string, versionManager VersionManager, runner Runner) Manager {
 	return &manager{
-		logger:         logger,
-		defaultVersion: defaultVersion,
-		versionManager: versionManager,
-		runner:         runner,
+		logger:          logger,
+		defaultTool:     defaultTool,
+		defaultVersions: defaultVersions,
+		versionManager:  versionManager,
+		runner:          runner,
 	}
 }
 
-func (m *manager) RunPlan(ctx context.Context, workspaceDir, stackName, toolVersion, planFlags string, live io.Writer) (string, error) {
-	terraformDir, version, err := m.resolveStack(workspaceDir, stackName, toolVersion)
+func (m *manager) RunPlan(ctx context.Context, workspaceDir, stackName, tool, toolVersion, planFlags string, live io.Writer) (string, error) {
+	resolved, err := m.resolveStack(workspaceDir, stackName, tool, toolVersion)
 	if err != nil {
 		return "", err
 	}
 
-	terraformBin, err := m.versionManager.Ensure(ctx, version)
+	toolBin, err := m.versionManager.Ensure(ctx, resolved.tool, resolved.version)
 	if err != nil {
 		return "", err
 	}
 
-	if err := m.runner.Init(ctx, terraformBin, terraformDir, live); err != nil {
+	if err := m.runner.Init(ctx, toolBin, resolved.dir, live); err != nil {
 		return "", err
 	}
 
-	return m.runner.Plan(ctx, terraformBin, terraformDir, planFlags, live)
+	return m.runner.Plan(ctx, toolBin, resolved.dir, planFlags, live)
 }
 
-func (m *manager) RunApply(ctx context.Context, workspaceDir, stackName, toolVersion string, live io.Writer) (string, error) {
-	terraformDir, version, err := m.resolveStack(workspaceDir, stackName, toolVersion)
+func (m *manager) RunApply(ctx context.Context, workspaceDir, stackName, tool, toolVersion string, live io.Writer) (string, error) {
+	resolved, err := m.resolveStack(workspaceDir, stackName, tool, toolVersion)
 	if err != nil {
 		return "", err
 	}
 
-	terraformBin, err := m.versionManager.Ensure(ctx, version)
+	toolBin, err := m.versionManager.Ensure(ctx, resolved.tool, resolved.version)
 	if err != nil {
 		return "", err
 	}
 
-	return m.runner.Apply(ctx, terraformBin, terraformDir, live)
+	return m.runner.Apply(ctx, toolBin, resolved.dir, live)
 }
 
-func (m *manager) resolveStack(workspaceDir, stackName, toolVersion string) (terraformDir, version string, err error) {
+type resolvedStack struct {
+	dir     string
+	tool    Tool
+	version string
+}
+
+// resolveStack picks the tool and version for a stack: the job's values win,
+// then the stack's terraplane.yaml, then the agent defaults.
+func (m *manager) resolveStack(workspaceDir, stackName, tool, toolVersion string) (resolvedStack, error) {
 	file, err := os.ReadFile(filepath.Join(workspaceDir, "terraplane.yaml"))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to read terraplane config: %w", err)
+		return resolvedStack{}, fmt.Errorf("failed to read terraplane config: %w", err)
 	}
 
 	terraplaneConfig, err := terraplaneconfig.ParseConfigFile(file)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to parse terraplane config: %w", err)
+		return resolvedStack{}, fmt.Errorf("failed to parse terraplane config: %w", err)
 	}
 
 	stacks, err := terraplaneConfig.ResolveStacks([]string{stackName}, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("stack %q not found in terraplane config: %w", stackName, err)
+		return resolvedStack{}, fmt.Errorf("stack %q not found in terraplane config: %w", stackName, err)
 	}
 	stack := stacks[0]
 
-	version = strings.TrimSpace(toolVersion)
+	resolvedTool, err := ParseTool(tool)
+	if err != nil {
+		return resolvedStack{}, fmt.Errorf("stack %q: %w", stackName, err)
+	}
+	if resolvedTool == "" {
+		resolvedTool, err = ParseTool(stack.Tool)
+		if err != nil {
+			return resolvedStack{}, fmt.Errorf("stack %q: %w", stackName, err)
+		}
+	}
+	if resolvedTool == "" {
+		resolvedTool = m.defaultTool
+	}
+
+	version := strings.TrimSpace(toolVersion)
 	if version == "" {
 		version = stack.ToolVersion
 	}
 	if version == "" {
-		version = m.defaultVersion
+		version = m.defaultVersions[resolvedTool]
 	}
 	if version == "" {
-		return "", "", fmt.Errorf("no terraform version configured for stack %q and AGENT_DEFAULT_TERRAFORM_VERSION is not set", stackName)
+		return resolvedStack{}, fmt.Errorf("no %s version configured for stack %q and %s is not set", resolvedTool, stackName, defaultVersionEnv(resolvedTool))
 	}
 
-	terraformDir, err = resolveStackDir(workspaceDir, stack.Dir)
+	dir, err := resolveStackDir(workspaceDir, stack.Dir)
 	if err != nil {
-		return "", "", fmt.Errorf("stack %q dir %q: %w", stackName, stack.Dir, err)
+		return resolvedStack{}, fmt.Errorf("stack %q dir %q: %w", stackName, stack.Dir, err)
 	}
-	return terraformDir, version, nil
+	return resolvedStack{dir: dir, tool: resolvedTool, version: version}, nil
+}
+
+func defaultVersionEnv(tool Tool) string {
+	if tool == ToolTofu {
+		return "AGENT_DEFAULT_TOFU_VERSION"
+	}
+	return "AGENT_DEFAULT_TERRAFORM_VERSION"
 }
 
 // resolveStackDir joins stackDir onto workspaceDir, rejecting any path that

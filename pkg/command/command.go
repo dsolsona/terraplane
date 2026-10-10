@@ -30,8 +30,8 @@ func (c *Command) JobID() string {
 }
 
 type base struct {
-	Repo, TriggerUser, RawComment, CommitSHA, Agent, JobID, Dir, ToolVersion string
-	PRNumber                                                                 int
+	Repo, TriggerUser, RawComment, CommitSHA, Agent, JobID, Dir, Tool, ToolVersion string
+	PRNumber                                                                       int
 }
 
 type PlanCommand struct {

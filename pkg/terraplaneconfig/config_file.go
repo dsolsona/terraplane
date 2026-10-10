@@ -14,6 +14,7 @@ type ConfigFile struct {
 type Environment struct {
 	Name   string  `yaml:"name"`
 	Agent  string  `yaml:"agent,omitempty"`
+	Tool   string  `yaml:"tool,omitempty"`
 	Stacks []Stack `yaml:"stacks"`
 }
 
@@ -21,17 +22,25 @@ type Stack struct {
 	Name        string `yaml:"name"`
 	Agent       string `yaml:"agent,omitempty"`
 	Dir         string `yaml:"dir"`
+	Tool        string `yaml:"tool,omitempty"`
 	ToolVersion string `yaml:"tool_version,omitempty"`
 }
 
-// ResolvedStack is a stack with environment inheritance applied (agent, etc.).
+// ResolvedStack is a stack with environment inheritance applied (agent, tool).
 type ResolvedStack struct {
 	Environment string
 	Name        string
 	Agent       string
 	Dir         string
+	Tool        string
 	ToolVersion string
 }
+
+// Tools terraplane can run a stack with. Empty leaves the choice to the agent.
+const (
+	ToolTerraform = "terraform"
+	ToolTofu      = "tofu"
+)
 
 func ParseConfigFile(data []byte) (*ConfigFile, error) {
 	var cfg ConfigFile
@@ -71,6 +80,9 @@ func (c *ConfigFile) Validate() error {
 		if len(env.Stacks) == 0 {
 			return fmt.Errorf("environment %q has no stacks", name)
 		}
+		if err := validateTool(env.Tool); err != nil {
+			return fmt.Errorf("environment %q: %w", name, err)
+		}
 
 		for _, stack := range env.Stacks {
 			stackName := strings.TrimSpace(stack.Name)
@@ -85,6 +97,9 @@ func (c *ConfigFile) Validate() error {
 			}
 			if hasControlChars(stack.Dir) {
 				return fmt.Errorf("stack %q in environment %q dir contains control characters", stackName, name)
+			}
+			if err := validateTool(stack.Tool); err != nil {
+				return fmt.Errorf("stack %q in environment %q: %w", stackName, name, err)
 			}
 			if prevEnv, ok := seenStacks[stackName]; ok {
 				return fmt.Errorf("stack name %q is not unique (found in environments %q and %q)", stackName, prevEnv, name)
@@ -114,11 +129,16 @@ func (c *ConfigFile) allResolved() []ResolvedStack {
 			if agent == "" {
 				agent = strings.TrimSpace(env.Agent)
 			}
+			tool := strings.ToLower(strings.TrimSpace(stack.Tool))
+			if tool == "" {
+				tool = strings.ToLower(strings.TrimSpace(env.Tool))
+			}
 			out = append(out, ResolvedStack{
 				Environment: strings.TrimSpace(env.Name),
 				Name:        strings.TrimSpace(stack.Name),
 				Agent:       agent,
 				Dir:         strings.TrimSpace(stack.Dir),
+				Tool:        tool,
 				ToolVersion: strings.TrimSpace(stack.ToolVersion),
 			})
 		}
@@ -203,6 +223,15 @@ func (c *ConfigFile) ResolveStacks(stackNames, environmentNames []string) ([]Res
 	}
 
 	return resolved, nil
+}
+
+func validateTool(tool string) error {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "", ToolTerraform, ToolTofu:
+		return nil
+	default:
+		return fmt.Errorf("unsupported tool %q (expected %s or %s)", tool, ToolTerraform, ToolTofu)
+	}
 }
 
 // hasControlChars reports whether s contains characters that could break out

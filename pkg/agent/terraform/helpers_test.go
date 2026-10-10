@@ -28,14 +28,14 @@ func TestRemoveStalePlanFiles(t *testing.T) {
 }
 
 func TestParseTerraformVersion(t *testing.T) {
-	v, err := parseTerraformVersion("v1.5.7")
+	v, err := parseToolVersion("v1.5.7")
 	require.NoError(t, err)
 	require.Equal(t, "1.5.7", v.String())
 
-	_, err = parseTerraformVersion("")
+	_, err = parseToolVersion("")
 	require.Error(t, err)
 
-	_, err = parseTerraformVersion("not-a-version")
+	_, err = parseToolVersion("not-a-version")
 	require.Error(t, err)
 }
 
@@ -44,13 +44,13 @@ func TestExistingTerraformBinary(t *testing.T) {
 	bin := filepath.Join(dir, "terraform")
 	require.NoError(t, os.WriteFile(bin, []byte("x"), 0o755))
 
-	got, err := existingTerraformBinary(bin)
+	got, err := existingBinary(bin)
 	require.NoError(t, err)
 	require.Equal(t, bin, got)
 
-	_, err = existingTerraformBinary(dir)
+	_, err = existingBinary(dir)
 	require.Error(t, err)
 
-	_, err = existingTerraformBinary(filepath.Join(dir, "missing"))
+	_, err = existingBinary(filepath.Join(dir, "missing"))
 	require.Error(t, err)
 }

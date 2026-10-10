@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	terraform "github.com/xyzjace/terraplane/pkg/agent/terraform"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -41,16 +42,16 @@ func (m *MockVersionManager) EXPECT() *MockVersionManagerMockRecorder {
 }
 
 // Ensure mocks base method.
-func (m *MockVersionManager) Ensure(ctx context.Context, version string) (string, error) {
+func (m *MockVersionManager) Ensure(ctx context.Context, tool terraform.Tool, version string) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Ensure", ctx, version)
+	ret := m.ctrl.Call(m, "Ensure", ctx, tool, version)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Ensure indicates an expected call of Ensure.
-func (mr *MockVersionManagerMockRecorder) Ensure(ctx, version any) *gomock.Call {
+func (mr *MockVersionManagerMockRecorder) Ensure(ctx, tool, version any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Ensure", reflect.TypeOf((*MockVersionManager)(nil).Ensure), ctx, version)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Ensure", reflect.TypeOf((*MockVersionManager)(nil).Ensure), ctx, tool, version)
 }

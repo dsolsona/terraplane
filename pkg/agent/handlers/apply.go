@@ -15,6 +15,7 @@ func (h *Handlers) handleApply(ctx context.Context, cmd *command.ApplyCommand) {
 		"repo", cmd.Repo,
 		"pr", cmd.PRNumber,
 		"commit", cmd.CommitSHA,
+		"tool", cmd.Tool,
 	)
 
 	workspaceDir, err := h.workspaceManager.FetchWorkspace(ctx, cmd.Repo, cmd.CommitSHA, cmd.Stacks[0])
@@ -51,7 +52,7 @@ func (h *Handlers) handleApply(ctx context.Context, cmd *command.ApplyCommand) {
 	stop := h.watchOutput(ctx, jobID, out)
 	defer stop()
 
-	output, err := h.terraformManager.RunApply(ctx, workspaceDir, cmd.Stacks[0], cmd.ToolVersion, out)
+	output, err := h.terraformManager.RunApply(ctx, workspaceDir, cmd.Stacks[0], cmd.Tool, cmd.ToolVersion, out)
 	if err != nil {
 		h.logger.Error(
 			"Failed to run terraform apply",

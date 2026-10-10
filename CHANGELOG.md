@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- OpenTofu support. Set `tool: tofu` on a stack or environment in `terraplane.yaml` (default `terraform`), or `AGENT_DEFAULT_TOOL=tofu` on an agent for repositories that do not say. Agents download OpenTofu releases from GitHub, verify them against the published `SHA256SUMS`, and keep them under `AGENT_TERRAFORM_BIN_DIR/tofu/<version>`. `AGENT_DEFAULT_TOFU_VERSION` (default `1.11.5`) is the fallback version for `tofu` stacks, alongside the existing `AGENT_DEFAULT_TERRAFORM_VERSION`.
 - `ORCHESTRATOR_CONFIG_PATH` points at an optional orchestrator config file (`agents` and `repos`). When set, each agent is identified by its own bearer token (`agents.<name>.token_env`) instead of `SHARED_AUTH_TOKEN`, and an agent request whose `agent_id` does not match its token is rejected with 403. Without the file nothing changes.
 
 - `repos.<slug>.permissions` (and `repos.<slug>.stacks.<name>.permissions`) in the orchestrator config list the GitHub users or `@org/team` slugs allowed to `plan`, `apply`, and `unlock` each stack. Denied stacks are reported in a single PR comment and never queued. Stacks listed in the orchestrator config carry a required `dir`; a pull request whose `terraplane.yaml` moves a listed stack to another directory, or reuses a listed directory under a new name, has that stack denied. Team membership lookups need a token with `read:org` and are cached for `ORCHESTRATOR_TEAM_CACHE_TTL` (default `5m`).
