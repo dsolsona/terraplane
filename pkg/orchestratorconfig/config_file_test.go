@@ -19,30 +19,31 @@ agents:
     token_env: AGENT_TOKEN_DATA
 
 repos:
-  acme/infra:
+  Acme/Infra:
     agent: agent-prod
     permissions:
       plan: ["@acme/engineering"]
-      apply: ["alice"]
+      apply: [" alice "]
       unlock: ["alice", "bob"]
     stacks:
       reporting:
+        dir: ./stacks/reporting/
         agent: agent-data
         permissions:
           plan: ["alice", "carol"]
           apply: ["carol"]
-      no-override: {}
+      no-override:
+        dir: stacks/no-override
   acme/platform:
     agent: agent-prod
     permissions:
       plan: ["@acme/platform"]
       apply: ["@acme/platform-leads"]
-    apply_requires:
-      approved: true
-      checks_green: true
   acme/empty:
     agent: agent-data
 `
+
+const minimalYAML = "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n"
 
 func env(vars map[string]string) func(string) string {
 	return func(key string) string { return vars[key] }
@@ -70,8 +71,6 @@ func TestParse(t *testing.T) {
 		require.Len(t, cfg.Repos, 3)
 		require.Equal(t, "AGENT_TOKEN_PROD", cfg.Agents["agent-prod"].TokenEnv)
 		require.Equal(t, "agent-data", cfg.Repos["acme/infra"].Stacks["reporting"].Agent)
-		require.True(t, cfg.Repos["acme/platform"].ApplyRequires.Approved)
-		require.True(t, cfg.Repos["acme/platform"].ApplyRequires.ChecksGreen)
 	})
 
 	t.Run("invalid yaml", func(t *testing.T) {
@@ -161,24 +160,64 @@ func TestValidate(t *testing.T) {
 			want: `repo "acme/infra" references unknown agent "nope"`,
 		},
 		{
+			name: "apply_requires approved not supported yet",
+			yaml: minimalYAML + "    apply_requires:\n      approved: true\n",
+			want: `repo "acme/infra": apply_requires is not supported yet`,
+		},
+		{
+			name: "apply_requires checks_green not supported yet",
+			yaml: minimalYAML + "    apply_requires:\n      checks_green: true\n",
+			want: `repo "acme/infra": apply_requires is not supported yet`,
+		},
+		{
 			name: "repo invalid permission entry",
-			yaml: "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n    permissions:\n      apply: [\"\"]\n",
+			yaml: minimalYAML + "    permissions:\n      apply: [\"\"]\n",
 			want: `repo "acme/infra" apply permissions: empty entry`,
 		},
 		{
 			name: "empty stack name",
-			yaml: "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n    stacks:\n      \"\": {}\n",
+			yaml: minimalYAML + "    stacks:\n      \"\": {dir: x}\n",
 			want: `stack name is required in repo "acme/infra"`,
 		},
 		{
+			name: "stack missing dir",
+			yaml: minimalYAML + "    stacks:\n      s: {}\n",
+			want: `stack "s" in repo "acme/infra" is missing dir`,
+		},
+		{
+			name: "stack absolute dir",
+			yaml: minimalYAML + "    stacks:\n      s: {dir: /etc}\n",
+			want: `stack "s" in repo "acme/infra" dir "/etc" must be relative`,
+		},
+		{
+			name: "stack dir escapes repository",
+			yaml: minimalYAML + "    stacks:\n      s: {dir: ../other}\n",
+			want: `stack "s" in repo "acme/infra" dir "../other" must be relative`,
+		},
+		{
+			name: "stack dir escapes repository after cleaning",
+			yaml: minimalYAML + "    stacks:\n      s: {dir: a/../..}\n",
+			want: `must be relative`,
+		},
+		{
+			name: "two stacks share a dir",
+			yaml: minimalYAML + "    stacks:\n      s: {dir: stacks/x}\n      t: {dir: ./stacks/x/}\n",
+			want: `share dir "stacks/x"`,
+		},
+		{
 			name: "stack unknown agent",
-			yaml: "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n    stacks:\n      s:\n        agent: nope\n",
+			yaml: minimalYAML + "    stacks:\n      s:\n        dir: x\n        agent: nope\n",
 			want: `stack "s" in repo "acme/infra" references unknown agent "nope"`,
 		},
 		{
 			name: "stack invalid permission entry",
-			yaml: "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n    stacks:\n      s:\n        permissions:\n          plan: [\"@acme\"]\n",
+			yaml: minimalYAML + "    stacks:\n      s:\n        dir: x\n        permissions:\n          plan: [\"@acme\"]\n",
 			want: `stack "s" in repo "acme/infra" plan permissions: invalid team reference "@acme" (expected @org/team)`,
+		},
+		{
+			name: "repo listed twice with different case",
+			yaml: "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n  Acme/Infra:\n    agent: a\n",
+			want: `repo "acme/infra" is listed more than once`,
 		},
 	}
 	for _, tt := range tests {
@@ -193,7 +232,7 @@ func TestValidate(t *testing.T) {
 func TestPermissionEntries(t *testing.T) {
 	valid := []string{"alice", "alice-1", "@acme/team", "@acme/team-leads"}
 	for _, entry := range valid {
-		yaml := "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n    permissions:\n      plan: [\"" + entry + "\"]\n"
+		yaml := minimalYAML + "    permissions:\n      plan: [\"" + entry + "\"]\n"
 		_, err := orchestratorconfig.Parse([]byte(yaml), env(map[string]string{"X": "t"}))
 		require.NoError(t, err, entry)
 	}
@@ -211,7 +250,7 @@ func TestPermissionEntries(t *testing.T) {
 		"alice/branch": "invalid user",
 	}
 	for entry, want := range invalid {
-		yaml := "agents:\n  a:\n    token_env: X\nrepos:\n  acme/infra:\n    agent: a\n    permissions:\n      unlock: [\"" + entry + "\"]\n"
+		yaml := minimalYAML + "    permissions:\n      unlock: [\"" + entry + "\"]\n"
 		_, err := orchestratorconfig.Parse([]byte(yaml), env(map[string]string{"X": "t"}))
 		require.Error(t, err, entry)
 		require.Contains(t, err.Error(), want, entry)
@@ -242,6 +281,7 @@ func TestAgentByToken(t *testing.T) {
 func TestHasRepo(t *testing.T) {
 	cfg := parseValid(t)
 	require.True(t, cfg.HasRepo("acme/infra"))
+	require.True(t, cfg.HasRepo("ACME/Infra"), "slugs are case-insensitive")
 	require.False(t, cfg.HasRepo("acme/unknown"))
 	require.False(t, (&orchestratorconfig.ConfigFile{}).HasRepo("acme/infra"))
 }
@@ -265,10 +305,38 @@ func TestAgentForStack(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestStackDir(t *testing.T) {
+	cfg := parseValid(t)
+
+	dir, ok := cfg.StackDir("acme/infra", "reporting")
+	require.True(t, ok)
+	require.Equal(t, "stacks/reporting", dir, "dirs are cleaned at load")
+
+	_, ok = cfg.StackDir("acme/infra", "not-listed")
+	require.False(t, ok)
+
+	_, ok = cfg.StackDir("acme/unknown", "reporting")
+	require.False(t, ok)
+}
+
+func TestStackByDir(t *testing.T) {
+	cfg := parseValid(t)
+
+	name, ok := cfg.StackByDir("acme/infra", "stacks/reporting/")
+	require.True(t, ok)
+	require.Equal(t, "reporting", name)
+
+	_, ok = cfg.StackByDir("acme/infra", "stacks/other")
+	require.False(t, ok)
+
+	_, ok = cfg.StackByDir("acme/unknown", "stacks/reporting")
+	require.False(t, ok)
+}
+
 func TestPermissionsFor(t *testing.T) {
 	cfg := parseValid(t)
 
-	t.Run("repo level with explicit unlock", func(t *testing.T) {
+	t.Run("repo level with explicit unlock and trimmed entries", func(t *testing.T) {
 		perms, ok := cfg.PermissionsFor("acme/infra", "not-listed")
 		require.True(t, ok)
 		require.Equal(t, []string{"@acme/engineering"}, perms.Plan)
@@ -306,8 +374,7 @@ func TestPermissionsFor(t *testing.T) {
 
 func TestApplyRequiresFor(t *testing.T) {
 	cfg := parseValid(t)
-	require.Equal(t, orchestratorconfig.ApplyRequires{Approved: true, ChecksGreen: true}, cfg.ApplyRequiresFor("acme/platform"))
-	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/infra"))
+	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/platform"))
 	require.Equal(t, orchestratorconfig.ApplyRequires{}, cfg.ApplyRequiresFor("acme/unknown"))
 }
 

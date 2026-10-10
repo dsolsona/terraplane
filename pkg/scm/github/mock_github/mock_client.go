@@ -84,6 +84,21 @@ func (mr *MockClientMockRecorder) ReactToComment(ctx, repo, commentID, reaction 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReactToComment", reflect.TypeOf((*MockClient)(nil).ReactToComment), ctx, repo, commentID, reaction)
 }
 
+// TeamMember mocks base method.
+func (m *MockClient) TeamMember(ctx context.Context, org, team, user string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "TeamMember", ctx, org, team, user)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// TeamMember indicates an expected call of TeamMember.
+func (mr *MockClientMockRecorder) TeamMember(ctx, org, team, user any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TeamMember", reflect.TypeOf((*MockClient)(nil).TeamMember), ctx, org, team, user)
+}
+
 // UpdateComment mocks base method.
 func (m *MockClient) UpdateComment(ctx context.Context, repo string, prNumber int, body string, commentID int) error {
 	m.ctrl.T.Helper()

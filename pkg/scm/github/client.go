@@ -22,6 +22,7 @@ type Client interface {
 	WriteComment(ctx context.Context, repo string, prNumber int, body string) (int, error)
 	UpdateComment(ctx context.Context, repo string, prNumber int, body string, commentID int) error
 	ReactToComment(ctx context.Context, repo string, commentID int, reaction string) error
+	TeamMember(ctx context.Context, org string, team string, user string) (bool, error)
 }
 
 type client struct {
@@ -196,6 +197,39 @@ func (c *client) UpdateComment(ctx context.Context, repo string, prNumber int, b
 	}
 	_, _ = io.Copy(io.Discard, res.Body)
 	return nil
+}
+
+// TeamMember checks org team membership. GitHub answers 404 for non-members
+// and for callers whose token lacks read:org, so both read as "not a member".
+func (c *client) TeamMember(ctx context.Context, org string, team string, user string) (bool, error) {
+	u := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", c.apiURL, url.PathEscape(org), url.PathEscape(team), url.PathEscape(user))
+	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to execute GitHub API request to check membership of %s in team %s/%s: %w", user, org, team, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	switch res.StatusCode {
+	case http.StatusOK:
+		var resp struct {
+			State string `json:"state"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+			return false, fmt.Errorf("failed to decode GitHub API response for membership of %s in team %s/%s: %w", user, org, team, err)
+		}
+		return resp.State == "active", nil
+	case http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, res.Body)
+		return false, nil
+	default:
+		respBody, _ := io.ReadAll(res.Body)
+		return false, fmt.Errorf("GitHub API request to check membership of %s in team %s/%s returned unexpected status %s: %s", user, org, team, res.Status, strings.TrimSpace(string(respBody)))
+	}
 }
 
 func appendRefQuery(u, ref string) (string, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/xyzjace/terraplane/pkg/authz"
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
@@ -23,6 +24,7 @@ type unlockService struct {
 	scmPublisher scm.Publisher
 	jobs         repository.JobRepository
 	locks        repository.LockRepository
+	authorizer   authz.Authorizer
 }
 
 func NewUnlockService(
@@ -31,6 +33,7 @@ func NewUnlockService(
 	scmPublisher scm.Publisher,
 	jobs repository.JobRepository,
 	locks repository.LockRepository,
+	authorizer authz.Authorizer,
 ) UnlockService {
 	return &unlockService{
 		logger:       logger,
@@ -38,6 +41,7 @@ func NewUnlockService(
 		scmPublisher: scmPublisher,
 		jobs:         jobs,
 		locks:        locks,
+		authorizer:   authorizer,
 	}
 }
 
@@ -77,6 +81,22 @@ func (s *unlockService) RunUnlock(ctx context.Context, unlock command.UnlockComm
 		err = fmt.Errorf("failed to resolve stacks for repository %s pull request #%d: %w", unlock.Repo, unlock.PRNumber, err)
 		s.publishUnlockFailure(ctx, unlock, "", err)
 		return err
+	}
+
+	stacks, denied, err := authorizeStacks(
+		ctx, s.logger, s.authorizer,
+		unlock.TriggerUser, unlock.Repo, unlock.PRNumber,
+		stacks, authz.ActionUnlock,
+	)
+	if err != nil {
+		s.publishUnlockFailure(ctx, unlock, "", err)
+		return err
+	}
+	if len(denied) > 0 {
+		publishDeniedComment(ctx, s.logger, s.scmPublisher, unlock.Repo, unlock.PRNumber, authz.ActionUnlock, denied)
+	}
+	if len(stacks) == 0 {
+		return nil
 	}
 
 	stackNames := make([]string, len(stacks))

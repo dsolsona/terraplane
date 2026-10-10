@@ -61,6 +61,10 @@ func (p *provider) GetFile(fileName string, revision string, repo string) (strin
 	return p.client.GetFile(context.Background(), repo, fileName, revision)
 }
 
+func (p *provider) TeamMember(ctx context.Context, org string, team string, user string) (bool, error) {
+	return p.client.TeamMember(ctx, org, team, user)
+}
+
 func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

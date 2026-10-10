@@ -155,3 +155,11 @@ func TestRunningStatusLabel(t *testing.T) {
 	require.Contains(t, got, "still going")
 	require.NotContains(t, got, "Apply when ready")
 }
+
+func TestDeniedComment(t *testing.T) {
+	got := feedback.DeniedComment("apply", []string{
+		"bob is not allowed to apply stack reporting in acme/infra",
+		"  bob is not allowed to apply stack billing in acme/infra  ",
+	})
+	require.Equal(t, "### apply · ⛔ denied\n\n> [!CAUTION]\n> - bob is not allowed to apply stack reporting in acme/infra\n> - bob is not allowed to apply stack billing in acme/infra\n", got)
+}

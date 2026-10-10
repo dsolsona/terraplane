@@ -14,6 +14,7 @@ import (
 	orchestrator2 "github.com/xyzjace/terraplane/pkg/agent/orchestrator"
 	"github.com/xyzjace/terraplane/pkg/agent/terraform"
 	"github.com/xyzjace/terraplane/pkg/agent/workspace"
+	"github.com/xyzjace/terraplane/pkg/authz"
 	"github.com/xyzjace/terraplane/pkg/orchestrator"
 	"github.com/xyzjace/terraplane/pkg/orchestrator/services"
 	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
@@ -48,8 +49,9 @@ func InitializeOrchestrator() (orchestrator.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	jobService := services.NewJobService(logger, jobRepository, lockRepository, provider, publisher, configConfig, configFile)
-	unlockService := services.NewUnlockService(logger, provider, publisher, jobRepository, lockRepository)
+	authorizer := authz.New(configConfig, logger, configFile, provider)
+	jobService := services.NewJobService(logger, jobRepository, lockRepository, provider, publisher, configConfig, configFile, authorizer)
+	unlockService := services.NewUnlockService(logger, provider, publisher, jobRepository, lockRepository, authorizer)
 	handler := webserver.NewHandler(logger, provider, publisher, jobService, unlockService, configConfig, configFile)
 	server := webserver.NewServer(configConfig, logger, handler)
 	dispatcher := orchestrator.NewDispatcher(configConfig, logger, jobService)

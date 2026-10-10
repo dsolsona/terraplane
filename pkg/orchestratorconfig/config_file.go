@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -37,7 +38,10 @@ type Repo struct {
 	ApplyRequires ApplyRequires    `yaml:"apply_requires,omitempty"`
 }
 
+// Stack pins a stack name to a directory so a pull request cannot point a
+// name with its own agent or permissions at some other directory.
 type Stack struct {
+	Dir         string       `yaml:"dir"`
 	Agent       string       `yaml:"agent,omitempty"`
 	Permissions *Permissions `yaml:"permissions,omitempty"`
 }
@@ -71,7 +75,7 @@ func Load(path string) (*ConfigFile, error) {
 	return Parse(data, os.Getenv)
 }
 
-// Parse decodes, validates, and resolves agent tokens through getenv.
+// Parse decodes, validates, normalises, and resolves agent tokens through getenv.
 func Parse(data []byte, getenv func(string) string) (*ConfigFile, error) {
 	var cfg ConfigFile
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -80,6 +84,9 @@ func Parse(data []byte, getenv func(string) string) (*ConfigFile, error) {
 		return nil, fmt.Errorf("parse orchestrator config: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.normalize(); err != nil {
 		return nil, err
 	}
 	if err := cfg.resolveTokens(getenv); err != nil {
@@ -95,7 +102,8 @@ func (c *ConfigFile) Enabled() bool {
 }
 
 // Validate checks structural rules: at least one agent and repo, every agent
-// reference resolves, and permission entries are logins or @org/team slugs.
+// reference resolves, every listed stack has a dir, and permission entries
+// are logins or @org/team slugs.
 func (c *ConfigFile) Validate() error {
 	if len(c.Agents) == 0 {
 		return fmt.Errorf("no agents configured")
@@ -122,13 +130,30 @@ func (c *ConfigFile) Validate() error {
 		if _, ok := c.Agents[repo.Agent]; !ok {
 			return fmt.Errorf("repo %q references unknown agent %q", slug, repo.Agent)
 		}
+		if repo.ApplyRequires.Approved || repo.ApplyRequires.ChecksGreen {
+			// TODO: remove once apply gates are enforced; until then a set flag must not look like protection.
+			return fmt.Errorf("repo %q: apply_requires is not supported yet", slug)
+		}
 		if err := repo.Permissions.validate(fmt.Sprintf("repo %q", slug)); err != nil {
 			return err
 		}
+
+		dirs := make(map[string]string, len(repo.Stacks)) // dir → stack name
 		for stackName, stack := range repo.Stacks {
 			if strings.TrimSpace(stackName) == "" {
 				return fmt.Errorf("stack name is required in repo %q", slug)
 			}
+			dir := cleanDir(stack.Dir)
+			if dir == "" {
+				return fmt.Errorf("stack %q in repo %q is missing dir", stackName, slug)
+			}
+			if path.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") {
+				return fmt.Errorf("stack %q in repo %q dir %q must be relative to the repository", stackName, slug, stack.Dir)
+			}
+			if other, ok := dirs[dir]; ok {
+				return fmt.Errorf("stacks %q and %q in repo %q share dir %q", other, stackName, slug, dir)
+			}
+			dirs[dir] = stackName
 			if stack.Agent != "" {
 				if _, ok := c.Agents[stack.Agent]; !ok {
 					return fmt.Errorf("stack %q in repo %q references unknown agent %q", stackName, slug, stack.Agent)
@@ -175,6 +200,62 @@ func validateEntry(entry string) error {
 	return nil
 }
 
+// normalize lowercases repo slugs (GitHub treats them case-insensitively),
+// cleans stack dirs, and trims permission entries so lookups match what
+// Validate accepted.
+func (c *ConfigFile) normalize() error {
+	repos := make(map[string]Repo, len(c.Repos))
+	for slug, repo := range c.Repos {
+		key := strings.ToLower(strings.TrimSpace(slug))
+		if _, ok := repos[key]; ok {
+			return fmt.Errorf("repo %q is listed more than once (slugs are case-insensitive)", key)
+		}
+		repo.Permissions = repo.Permissions.trimmed()
+		stacks := make(map[string]Stack, len(repo.Stacks))
+		for name, stack := range repo.Stacks {
+			stack.Dir = cleanDir(stack.Dir)
+			stack.Permissions = stack.Permissions.trimmed()
+			stacks[strings.TrimSpace(name)] = stack
+		}
+		repo.Stacks = stacks
+		repos[key] = repo
+	}
+	c.Repos = repos
+	return nil
+}
+
+func (p *Permissions) trimmed() *Permissions {
+	if p == nil {
+		return nil
+	}
+	return &Permissions{
+		Plan:   trimAll(p.Plan),
+		Apply:  trimAll(p.Apply),
+		Unlock: trimAll(p.Unlock),
+	}
+}
+
+func trimAll(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = strings.TrimSpace(v)
+	}
+	return out
+}
+
+// cleanDir normalises a repository-relative directory the same way on both
+// sides of a comparison. Empty input stays empty.
+func cleanDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	return path.Clean(strings.ReplaceAll(dir, `\`, "/"))
+}
+
 func (c *ConfigFile) resolveTokens(getenv func(string) string) error {
 	c.tokens = make(map[string]string, len(c.Agents))
 	byToken := make(map[string]string, len(c.Agents)) // token → agent name
@@ -204,15 +285,20 @@ func (c *ConfigFile) AgentByToken(token string) (string, bool) {
 	return matched, matched != ""
 }
 
+func (c *ConfigFile) repo(slug string) (Repo, bool) {
+	r, ok := c.Repos[strings.ToLower(strings.TrimSpace(slug))]
+	return r, ok
+}
+
 func (c *ConfigFile) HasRepo(repo string) bool {
-	_, ok := c.Repos[repo]
+	_, ok := c.repo(repo)
 	return ok
 }
 
 // AgentForStack returns the agent that runs stack in repo: the stack override
 // when set, otherwise the repo default.
 func (c *ConfigFile) AgentForStack(repo, stack string) (string, bool) {
-	r, ok := c.Repos[repo]
+	r, ok := c.repo(repo)
 	if !ok {
 		return "", false
 	}
@@ -222,12 +308,40 @@ func (c *ConfigFile) AgentForStack(repo, stack string) (string, bool) {
 	return r.Agent, true
 }
 
+// StackDir returns the directory a listed stack is pinned to.
+func (c *ConfigFile) StackDir(repo, stack string) (string, bool) {
+	r, ok := c.repo(repo)
+	if !ok {
+		return "", false
+	}
+	s, ok := r.Stacks[stack]
+	if !ok {
+		return "", false
+	}
+	return s.Dir, true
+}
+
+// StackByDir returns the listed stack pinned to dir, if any.
+func (c *ConfigFile) StackByDir(repo, dir string) (string, bool) {
+	r, ok := c.repo(repo)
+	if !ok {
+		return "", false
+	}
+	dir = cleanDir(dir)
+	for name, s := range r.Stacks {
+		if s.Dir == dir {
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // PermissionsFor returns the permissions that apply to stack in repo. A stack
 // block replaces the repo block entirely. Unlock defaults to the apply list
 // when omitted. A repo without permissions yields empty lists, which denies
 // every action.
 func (c *ConfigFile) PermissionsFor(repo, stack string) (Permissions, bool) {
-	r, ok := c.Repos[repo]
+	r, ok := c.repo(repo)
 	if !ok {
 		return Permissions{}, false
 	}
@@ -246,5 +360,6 @@ func (c *ConfigFile) PermissionsFor(repo, stack string) (Permissions, bool) {
 }
 
 func (c *ConfigFile) ApplyRequiresFor(repo string) ApplyRequires {
-	return c.Repos[repo].ApplyRequires
+	r, _ := c.repo(repo)
+	return r.ApplyRequires
 }

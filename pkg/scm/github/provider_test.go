@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -177,4 +178,15 @@ func (s *ProviderSuite) TestIssueCommentBodyReadError() {
 	_, err = s.prov.parseIssueCommentWebhook(req)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to read GitHub issue comment webhook request body")
+}
+
+func (s *ProviderSuite) TestTeamMemberDelegatesToClient() {
+	s.client.EXPECT().TeamMember(gomock.Any(), "acme", "platform", "alice").Return(true, nil)
+	member, err := s.prov.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.NoError(s.T(), err)
+	require.True(s.T(), member)
+
+	s.client.EXPECT().TeamMember(gomock.Any(), "acme", "platform", "bob").Return(false, errors.New("boom"))
+	_, err = s.prov.TeamMember(context.Background(), "acme", "platform", "bob")
+	require.Error(s.T(), err)
 }

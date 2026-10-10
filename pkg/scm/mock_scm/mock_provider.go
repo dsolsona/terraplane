@@ -10,6 +10,7 @@
 package mock_scm
 
 import (
+	context "context"
 	http "net/http"
 	reflect "reflect"
 
@@ -83,4 +84,19 @@ func (m *MockProvider) ParseWebhook(r *http.Request) ([]scm.Webhook, error) {
 func (mr *MockProviderMockRecorder) ParseWebhook(r any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ParseWebhook", reflect.TypeOf((*MockProvider)(nil).ParseWebhook), r)
+}
+
+// TeamMember mocks base method.
+func (m *MockProvider) TeamMember(ctx context.Context, org, team, user string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "TeamMember", ctx, org, team, user)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// TeamMember indicates an expected call of TeamMember.
+func (mr *MockProviderMockRecorder) TeamMember(ctx, org, team, user any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TeamMember", reflect.TypeOf((*MockProvider)(nil).TeamMember), ctx, org, team, user)
 }

@@ -20,7 +20,7 @@ build:
 # scm/github and agent/orchestrator are intentionally omitted: unreachable without live external services
 # marshal-error and transport-construction branches are not worth package-level test hooks.
 # workspace/terraform intentionally omit Ensure/download and some OS edge paths.
-COVERAGE_FULL_PKGS=./pkg/log ./internal/auth ./pkg/terraplaneconfig ./pkg/orchestratorconfig ./pkg/feedback ./pkg/command ./pkg/orchestrator/services ./pkg/agent/handlers ./pkg/webserver
+COVERAGE_FULL_PKGS=./pkg/log ./internal/auth ./pkg/terraplaneconfig ./pkg/orchestratorconfig ./pkg/authz ./pkg/feedback ./pkg/command ./pkg/orchestrator/services ./pkg/agent/handlers ./pkg/webserver
 # Exclude generated mocks and protobuf stubs from the aggregate report.
 COVER_PKGS=$$(go list ./... | grep -vE '/mock_|/pkg/terraplane/v1$$')
 

@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
 
+	"github.com/xyzjace/terraplane/pkg/authz"
+	"github.com/xyzjace/terraplane/pkg/authz/mock_authz"
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
@@ -25,6 +27,7 @@ type UnlockServiceSuite struct {
 	publisher *mock_scm.MockPublisher
 	jobs      *mock_repository.MockJobRepository
 	locks     *mock_repository.MockLockRepository
+	authz     *mock_authz.MockAuthorizer
 	svc       services.UnlockService
 }
 
@@ -38,7 +41,8 @@ func (s *UnlockServiceSuite) SetupTest() {
 	s.publisher = mock_scm.NewMockPublisher(s.ctrl)
 	s.jobs = mock_repository.NewMockJobRepository(s.ctrl)
 	s.locks = mock_repository.NewMockLockRepository(s.ctrl)
-	s.svc = services.NewUnlockService(log.Noop(), s.scm, s.publisher, s.jobs, s.locks)
+	s.authz = mock_authz.NewMockAuthorizer(s.ctrl)
+	s.svc = services.NewUnlockService(log.Noop(), s.scm, s.publisher, s.jobs, s.locks, authz.AllowAll())
 }
 
 func (s *UnlockServiceSuite) TestRequiresSelector() {
@@ -164,4 +168,54 @@ func (s *UnlockServiceSuite) TestSuccessCommentFailureIsBestEffort() {
 
 	err := s.svc.RunUnlock(context.Background(), unlock)
 	require.NoError(s.T(), err)
+}
+
+// --- authorization ---
+
+func (s *UnlockServiceSuite) authorizedService() services.UnlockService {
+	return services.NewUnlockService(log.Noop(), s.scm, s.publisher, s.jobs, s.locks, s.authz)
+}
+
+func (s *UnlockServiceSuite) TestUnlockSkipsDeniedStacks() {
+	unlock := unlockCmd("terraplane unlock -s a -s b")
+	s.scm.EXPECT().GetFile("terraplane.yaml", unlock.CommitSHA, unlock.Repo).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionUnlock).Return(true, "", nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "b", authz.ActionUnlock).Return(false, "jace is not allowed to unlock stack b in acme/infra", nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), unlock.Repo, unlock.PRNumber, feedback.DeniedComment("unlock", []string{
+		"jace is not allowed to unlock stack b in acme/infra",
+	})).Return(0, nil)
+	s.locks.EXPECT().DeleteByRepoAndStacks(gomock.Any(), unlock.Repo, []string{"a"}).Return(1, nil)
+	s.jobs.EXPECT().DeleteByRepoPRAndStacks(gomock.Any(), unlock.Repo, unlock.PRNumber, []string{"a"}).Return(1, nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), unlock.Repo, unlock.PRNumber, feedback.UnlockResultComment("a", models.JobStatusSucceeded, "")).Return(0, nil)
+
+	err := s.authorizedService().RunUnlock(context.Background(), unlock)
+	require.NoError(s.T(), err)
+}
+
+func (s *UnlockServiceSuite) TestUnlockDeniedForEveryStackDoesNothing() {
+	unlock := unlockCmd("terraplane unlock -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", unlock.CommitSHA, unlock.Repo).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionUnlock).Return(false, "no", nil)
+	s.publisher.EXPECT().WriteComment(gomock.Any(), unlock.Repo, unlock.PRNumber, gomock.Any()).Return(0, nil)
+	// No lock or job deletes.
+
+	err := s.authorizedService().RunUnlock(context.Background(), unlock)
+	require.NoError(s.T(), err)
+}
+
+func (s *UnlockServiceSuite) TestUnlockAuthorizationErrorPublishesFailure() {
+	unlock := unlockCmd("terraplane unlock -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", unlock.CommitSHA, unlock.Repo).Return(twoStackYAML, nil)
+	s.authz.EXPECT().Allowed(gomock.Any(), "jace", "acme/infra", "a", authz.ActionUnlock).Return(false, "", errors.New("github down"))
+	s.publisher.EXPECT().WriteComment(gomock.Any(), unlock.Repo, unlock.PRNumber, gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ string, _ int, body string) (int, error) {
+			require.Contains(s.T(), body, "unlock ·")
+			require.Contains(s.T(), body, "failed to authorize unlock")
+			return 0, nil
+		},
+	)
+
+	err := s.authorizedService().RunUnlock(context.Background(), unlock)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "github down")
 }

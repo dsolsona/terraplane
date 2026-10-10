@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xyzjace/terraplane/config"
+	"github.com/xyzjace/terraplane/pkg/authz"
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
@@ -41,6 +42,7 @@ type jobService struct {
 	scmProvider        scm.Provider
 	scmPublisher       scm.Publisher
 	orchestratorConfig *orchestratorconfig.ConfigFile
+	authorizer         authz.Authorizer
 	jobLease           time.Duration
 	jobCleanupInterval time.Duration
 }
@@ -53,6 +55,7 @@ func NewJobService(
 	scmPublisher scm.Publisher,
 	config *config.Config,
 	orchestratorConfig *orchestratorconfig.ConfigFile,
+	authorizer authz.Authorizer,
 ) JobService {
 	return &jobService{
 		logger:             logger,
@@ -61,6 +64,7 @@ func NewJobService(
 		scmProvider:        scmProvider,
 		scmPublisher:       scmPublisher,
 		orchestratorConfig: orchestratorConfig,
+		authorizer:         authorizer,
 		jobLease:           config.OrchestratorJobLease,
 		jobCleanupInterval: config.OrchestratorJobCleanupInterval,
 	}
@@ -103,6 +107,21 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	resolvedStacks, err := config.ResolveStacks(stackNames, environmentNames)
 	if err != nil {
 		return fmt.Errorf("failed to resolve stacks for repository %s pull request #%d: %w", webhook.RepositorySlug, webhook.PRNumber, err)
+	}
+
+	resolvedStacks, unbound := bindStackDirs(j.logger, j.orchestratorConfig, webhook.RepositorySlug, webhook.PRNumber, resolvedStacks)
+
+	resolvedStacks, denied, err := authorizeStacks(
+		ctx, j.logger, j.authorizer,
+		webhook.TriggeringUser, webhook.RepositorySlug, webhook.PRNumber,
+		resolvedStacks, authz.Action(action),
+	)
+	if err != nil {
+		return err
+	}
+	denied = append(unbound, denied...)
+	if len(denied) > 0 {
+		publishDeniedComment(ctx, j.logger, j.scmPublisher, webhook.RepositorySlug, webhook.PRNumber, authz.Action(action), denied)
 	}
 
 	for _, stack := range resolvedStacks {
@@ -361,6 +380,12 @@ func (j *jobService) HandlePeriodicResult(ctx context.Context, jobID, agentID, o
 	job, err := j.jobRepository.Get(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch job %s: %w", jobID, err)
+	}
+	if err := validateJobAgent(job, agentID); err != nil {
+		return err
+	}
+	if job.Status != models.JobStatusRunning {
+		return fmt.Errorf("%w: job %s is %s, expected running", ErrJobInvalidStatus, jobID, job.Status)
 	}
 
 	comment := feedback.JobResultComment(job, job.Status, output, "")

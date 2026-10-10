@@ -313,3 +313,78 @@ func (errReader) Read([]byte) (int, error) { return 0, errors.New("read failed")
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func (s *ClientSuite) TestTeamMemberActive() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/orgs/acme/teams/platform/memberships/alice", r.URL.Path)
+		require.Equal(s.T(), http.MethodGet, r.Method)
+		_, _ = io.WriteString(w, `{"state":"active","role":"member"}`)
+	})
+	member, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.NoError(s.T(), err)
+	require.True(s.T(), member)
+}
+
+func (s *ClientSuite) TestTeamMemberPending() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"state":"pending"}`)
+	})
+	member, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.NoError(s.T(), err)
+	require.False(s.T(), member)
+}
+
+func (s *ClientSuite) TestTeamMemberNotFound() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	})
+	member, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.NoError(s.T(), err)
+	require.False(s.T(), member)
+}
+
+func (s *ClientSuite) TestTeamMemberUnexpectedStatus() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"Resource not accessible"}`)
+	})
+	_, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "unexpected status")
+	require.Contains(s.T(), err.Error(), "Resource not accessible")
+}
+
+func (s *ClientSuite) TestTeamMemberBadJSON() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{not-json`)
+	})
+	_, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to decode")
+}
+
+func (s *ClientSuite) TestTeamMemberTransportError() {
+	c, srv := s.newClient(func(w http.ResponseWriter, r *http.Request) {})
+	srv.Close()
+	_, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to execute")
+}
+
+func (s *ClientSuite) TestTeamMemberMissingAccessToken() {
+	c := &client{httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
+	_, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
+}
+
+func (s *ClientSuite) TestTeamMemberEscapesPathSegments() {
+	c, _ := s.newClient(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/orgs/acme/teams/plat%3Fform/memberships/al%20ice%2F..", r.URL.EscapedPath())
+		w.WriteHeader(http.StatusNotFound)
+	})
+	member, err := c.TeamMember(context.Background(), "acme", "plat?form", "al ice/..")
+	require.NoError(s.T(), err)
+	require.False(s.T(), member)
+}
