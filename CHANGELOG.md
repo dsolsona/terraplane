@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- After verifying the webhook signature, the orchestrator re-reads each command comment from the GitHub API and acts on the author, body, and pull request as GitHub reports them rather than as the webhook body claims. Deleted comments are ignored. Comments whose first word is not `terraplane` no longer cause any API calls.
 - `POST /agent/jobs/{id}/periodic_result` now requires the job to belong to the calling agent and to be running, like `ack` and `result`
 - `terraplane.yaml` rejects environment names, stack names, and dirs containing control characters
 - With an orchestrator config, the agent that runs each stack comes from `repos.<slug>.agent` (or `repos.<slug>.stacks.<name>.agent`) instead of `terraplane.yaml`, whose `agent` fields are then ignored and no longer required. Webhooks from repositories not listed under `repos` are ignored.
