@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ORCHESTRATOR_CONFIG_PATH` points at an optional orchestrator config file (`agents` and `repos`). When set, each agent is identified by its own bearer token (`agents.<name>.token_env`) instead of `SHARED_AUTH_TOKEN`, and an agent request whose `agent_id` does not match its token is rejected with 403. Without the file nothing changes.
 
 ## [0.4.0] - 2026-09-17
 

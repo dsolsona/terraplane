@@ -11,6 +11,7 @@ import (
 	"github.com/xyzjace/terraplane/config"
 	"github.com/xyzjace/terraplane/pkg/log"
 	"github.com/xyzjace/terraplane/pkg/orchestrator"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 )
 
 type stubSchema struct {
@@ -60,6 +61,7 @@ func TestStartMissingAuthToken(t *testing.T) {
 		&stubServer{},
 		stubSchema{},
 		stubDispatcher{},
+		&orchestratorconfig.ConfigFile{},
 	)
 	err := m.Start(context.Background())
 	require.Error(t, err)
@@ -73,6 +75,7 @@ func TestStartSchemaCheckFailure(t *testing.T) {
 		&stubServer{},
 		stubSchema{err: errors.New("migrations pending")},
 		stubDispatcher{},
+		&orchestratorconfig.ConfigFile{},
 	)
 	err := m.Start(context.Background())
 	require.Error(t, err)
@@ -90,6 +93,7 @@ func TestStartAndShutdownOnCancel(t *testing.T) {
 		srv,
 		stubSchema{},
 		stubDispatcher{},
+		&orchestratorconfig.ConfigFile{},
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,9 +128,34 @@ func TestStartPropagatesServerError(t *testing.T) {
 		&stubServer{startErr: errors.New("bind failed")},
 		stubSchema{},
 		stubDispatcher{},
+		&orchestratorconfig.ConfigFile{},
 	)
 
 	err := m.Start(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bind failed")
+}
+
+func TestStartWithAgentTokensDoesNotRequireSharedToken(t *testing.T) {
+	cfgFile, err := orchestratorconfig.Parse([]byte(`
+agents:
+  agent-prod:
+    token_env: AGENT_TOKEN_PROD
+repos:
+  acme/infra:
+    agent: agent-prod
+`), func(string) string { return "prod-token" })
+	require.NoError(t, err)
+
+	m := orchestrator.NewManager(
+		&config.Config{SharedAuthToken: "", ServerShutdownTimer: time.Second},
+		log.Noop(),
+		&stubServer{},
+		stubSchema{err: errors.New("migrations pending")},
+		stubDispatcher{},
+		cfgFile,
+	)
+	err = m.Start(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "migrations pending")
 }

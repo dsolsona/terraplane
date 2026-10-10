@@ -1,6 +1,9 @@
 package auth
 
-import "strings"
+import (
+	"crypto/subtle"
+	"strings"
+)
 
 const bearerPrefix = "Bearer "
 
@@ -21,10 +24,12 @@ func ParseBearerToken(header string) (string, bool) {
 }
 
 // BearerTokenMatches reports whether header carries the expected bearer secret.
+// The comparison is constant time so a wrong token does not leak how much of
+// it was right.
 func BearerTokenMatches(header, secret string) bool {
 	got, ok := ParseBearerToken(header)
 	if !ok {
 		return false
 	}
-	return got == secret
+	return subtle.ConstantTimeCompare([]byte(got), []byte(secret)) == 1
 }

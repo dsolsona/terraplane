@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,18 +11,23 @@ import (
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/log"
 	"github.com/xyzjace/terraplane/pkg/orchestrator/services"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 	"github.com/xyzjace/terraplane/pkg/scm"
 )
 
 type handler struct {
-	logger          log.Logger
-	scmProvider     scm.Provider
-	scmPublisher    scm.Publisher
-	mux             *http.ServeMux
-	sharedAuthToken string
-	jobService      services.JobService
-	unlockService   services.UnlockService
+	logger             log.Logger
+	scmProvider        scm.Provider
+	scmPublisher       scm.Publisher
+	mux                *http.ServeMux
+	sharedAuthToken    string
+	orchestratorConfig *orchestratorconfig.ConfigFile
+	jobService         services.JobService
+	unlockService      services.UnlockService
 }
+
+// agentIDContextKey carries the agent identity derived from a per-agent token.
+type agentIDContextKey struct{}
 
 func NewHandler(
 	logger log.Logger,
@@ -30,15 +36,17 @@ func NewHandler(
 	jobService services.JobService,
 	unlockService services.UnlockService,
 	config *config.Config,
+	orchestratorConfig *orchestratorconfig.ConfigFile,
 ) http.Handler {
 	h := &handler{
-		logger:          logger,
-		mux:             http.NewServeMux(),
-		scmProvider:     scmProvider,
-		scmPublisher:    scmPublisher,
-		sharedAuthToken: config.SharedAuthToken,
-		jobService:      jobService,
-		unlockService:   unlockService,
+		logger:             logger,
+		mux:                http.NewServeMux(),
+		scmProvider:        scmProvider,
+		scmPublisher:       scmPublisher,
+		sharedAuthToken:    config.SharedAuthToken,
+		orchestratorConfig: orchestratorConfig,
+		jobService:         jobService,
+		unlockService:      unlockService,
 	}
 
 	h.mux.HandleFunc("GET /health", h.healthCheck)
@@ -52,15 +60,60 @@ func NewHandler(
 	return h
 }
 
+// requireBearer authenticates agent routes. With an orchestrator config the
+// token identifies the agent and that identity is stored in the request
+// context; otherwise the shared token is accepted from any agent.
 func (h *handler) requireBearer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !auth.BearerTokenMatches(r.Header.Get("Authorization"), h.sharedAuthToken) {
-			h.logger.Warn("Rejected request with invalid auth token", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
-			writeResponse(w, http.StatusUnauthorized, "Unauthorized")
+		header := r.Header.Get("Authorization")
+
+		if !h.orchestratorConfig.Enabled() {
+			if !auth.BearerTokenMatches(header, h.sharedAuthToken) {
+				h.rejectUnauthorized(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		token, ok := auth.ParseBearerToken(header)
+		if !ok {
+			h.rejectUnauthorized(w, r)
+			return
+		}
+		agentID, ok := h.orchestratorConfig.AgentByToken(token)
+		if !ok {
+			h.rejectUnauthorized(w, r)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), agentIDContextKey{}, agentID)))
 	})
+}
+
+func (h *handler) rejectUnauthorized(w http.ResponseWriter, r *http.Request) {
+	h.logger.Warn("Rejected request with invalid auth token", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+	writeResponse(w, http.StatusUnauthorized, "Unauthorized")
+}
+
+// resolveAgentID returns the agent making the request. When the token
+// identified the agent, a conflicting agent_id in the body is rejected and
+// false is returned after writing the response.
+func (h *handler) resolveAgentID(w http.ResponseWriter, r *http.Request, bodyAgentID string) (string, bool) {
+	tokenAgentID, ok := r.Context().Value(agentIDContextKey{}).(string)
+	if !ok {
+		return bodyAgentID, true
+	}
+	if bodyAgentID != "" && bodyAgentID != tokenAgentID {
+		h.logger.Warn(
+			"Rejected request whose agent_id does not match its token",
+			"path", r.URL.Path,
+			"agent_id", bodyAgentID,
+			"token_agent_id", tokenAgentID,
+		)
+		writeResponse(w, http.StatusForbidden, "agent_id does not match token")
+		return "", false
+	}
+	return tokenAgentID, true
 }
 
 func (h *handler) scmWebhookHandler(w http.ResponseWriter, r *http.Request) {
@@ -135,8 +188,12 @@ func (h *handler) agentJobClaimHandler(w http.ResponseWriter, r *http.Request) {
 		writeResponse(w, http.StatusInternalServerError, "Failed to unmarshal agent job claim request body")
 		return
 	}
+	agentID, ok := h.resolveAgentID(w, r, payload.AgentID)
+	if !ok {
+		return
+	}
 
-	cmd, err := h.jobService.ClaimPendingJob(r.Context(), payload.AgentID)
+	cmd, err := h.jobService.ClaimPendingJob(r.Context(), agentID)
 	if err != nil {
 		if errors.Is(err, services.ErrEmptyAgentID) {
 			writeResponse(w, http.StatusBadRequest, "agent_id is required")
@@ -161,8 +218,12 @@ func (h *handler) agentHeartbeatHandler(w http.ResponseWriter, r *http.Request) 
 		writeResponse(w, http.StatusInternalServerError, "Failed to unmarshal agent heartbeat request body")
 		return
 	}
+	agentID, ok := h.resolveAgentID(w, r, payload.AgentID)
+	if !ok {
+		return
+	}
 
-	if err := h.jobService.RefreshAgentClaims(r.Context(), payload.AgentID); err != nil {
+	if err := h.jobService.RefreshAgentClaims(r.Context(), agentID); err != nil {
 		h.logger.Error("Failed to refresh agent claims", "error", err)
 		writeResponse(w, http.StatusInternalServerError, "Failed to refresh agent claims")
 		return
@@ -178,10 +239,14 @@ func (h *handler) agentJobAckHandler(w http.ResponseWriter, r *http.Request) {
 		writeResponse(w, http.StatusInternalServerError, "Failed to unmarshal agent job ack request body")
 		return
 	}
+	agentID, ok := h.resolveAgentID(w, r, payload.AgentID)
+	if !ok {
+		return
+	}
 
 	jobID := r.PathValue("id")
-	if err := h.jobService.AckJob(r.Context(), jobID, payload.AgentID); err != nil {
-		h.logger.Error("Failed to ack job", "job_id", jobID, "agent_id", payload.AgentID, "error", err)
+	if err := h.jobService.AckJob(r.Context(), jobID, agentID); err != nil {
+		h.logger.Error("Failed to ack job", "job_id", jobID, "agent_id", agentID, "error", err)
 		writeResponse(w, http.StatusInternalServerError, "Failed to ack job")
 		return
 	}
@@ -196,10 +261,14 @@ func (h *handler) agentJobResultHandler(w http.ResponseWriter, r *http.Request) 
 		writeResponse(w, http.StatusInternalServerError, "Failed to unmarshal agent job result request body")
 		return
 	}
+	agentID, ok := h.resolveAgentID(w, r, payload.AgentID)
+	if !ok {
+		return
+	}
 
 	jobID := r.PathValue("id")
-	if err := h.jobService.CommitJobResult(r.Context(), jobID, payload.AgentID, payload.Result, payload.Output, payload.Error); err != nil {
-		h.logger.Error("Failed to commit job result", "job_id", jobID, "agent_id", payload.AgentID, "error", err)
+	if err := h.jobService.CommitJobResult(r.Context(), jobID, agentID, payload.Result, payload.Output, payload.Error); err != nil {
+		h.logger.Error("Failed to commit job result", "job_id", jobID, "agent_id", agentID, "error", err)
 		writeResponse(w, http.StatusInternalServerError, "Failed to commit job result")
 		return
 	}
@@ -214,10 +283,14 @@ func (h *handler) agentPeriodicResultHandler(w http.ResponseWriter, r *http.Requ
 		writeResponse(w, http.StatusInternalServerError, "Failed to unmarshal agent periodic result request body")
 		return
 	}
+	agentID, ok := h.resolveAgentID(w, r, payload.AgentID)
+	if !ok {
+		return
+	}
 
 	jobID := r.PathValue("id")
-	if err := h.jobService.HandlePeriodicResult(r.Context(), jobID, payload.AgentID, payload.Output); err != nil {
-		h.logger.Error("Failed to handle periodic result", "job_id", jobID, "agent_id", payload.AgentID, "error", err)
+	if err := h.jobService.HandlePeriodicResult(r.Context(), jobID, agentID, payload.Output); err != nil {
+		h.logger.Error("Failed to handle periodic result", "job_id", jobID, "agent_id", agentID, "error", err)
 		writeResponse(w, http.StatusInternalServerError, "Failed to handle periodic result")
 		return
 	}

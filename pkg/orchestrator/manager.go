@@ -9,6 +9,7 @@ import (
 
 	"github.com/xyzjace/terraplane/config"
 	"github.com/xyzjace/terraplane/pkg/log"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 	"github.com/xyzjace/terraplane/pkg/webserver"
 	"golang.org/x/sync/errgroup"
 )
@@ -28,11 +29,13 @@ type manager struct {
 	server              webserver.Server
 	schema              SchemaChecker
 	sharedAuthToken     string
+	orchestratorConfig  *orchestratorconfig.ConfigFile
 	dispatcher          Dispatcher
 }
 
 func (o *manager) Start(ctx context.Context) error {
-	if o.sharedAuthToken == "" {
+	// With an orchestrator config each agent has its own token, so the shared one is not needed.
+	if o.sharedAuthToken == "" && !o.orchestratorConfig.Enabled() {
 		return fmt.Errorf("SHARED_AUTH_TOKEN is not configured")
 	}
 
@@ -81,13 +84,21 @@ func (o *manager) Start(ctx context.Context) error {
 	return nil
 }
 
-func NewManager(config *config.Config, logger log.Logger, server webserver.Server, schema SchemaChecker, dispatcher Dispatcher) Manager {
+func NewManager(
+	config *config.Config,
+	logger log.Logger,
+	server webserver.Server,
+	schema SchemaChecker,
+	dispatcher Dispatcher,
+	orchestratorConfig *orchestratorconfig.ConfigFile,
+) Manager {
 	return &manager{
 		serverShutdownTimer: config.ServerShutdownTimer,
 		logger:              logger,
 		server:              server,
 		schema:              schema,
 		sharedAuthToken:     config.SharedAuthToken,
+		orchestratorConfig:  orchestratorConfig,
 		dispatcher:          dispatcher,
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/log"
 	"github.com/xyzjace/terraplane/pkg/orchestrator/services"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 	"github.com/xyzjace/terraplane/pkg/scm"
 	"github.com/xyzjace/terraplane/pkg/scm/mock_scm"
 	"github.com/xyzjace/terraplane/pkg/webserver"
@@ -28,6 +29,7 @@ type stubJobs struct {
 	called      chan *scm.Webhook
 	claimCmd    *command.Command
 	claimErr    error
+	claimed     []string
 	refreshErr  error
 	refreshed   []string
 	ackErr      error
@@ -58,6 +60,7 @@ func (s *stubJobs) CreatePendingJobs(_ context.Context, webhook *scm.Webhook) er
 }
 
 func (s *stubJobs) ClaimPendingJob(_ context.Context, agentID string) (*command.Command, error) {
+	s.claimed = append(s.claimed, agentID)
 	if agentID == "" {
 		return nil, services.ErrEmptyAgentID
 	}
@@ -129,6 +132,7 @@ func (s *HandlerSuite) newHandler() http.Handler {
 		s.jobs,
 		s.unlocks,
 		&config.Config{SharedAuthToken: "secret"},
+		&orchestratorconfig.ConfigFile{},
 	)
 }
 
@@ -504,4 +508,115 @@ func TestServerStartListenError(t *testing.T) {
 
 	err := srv.Start(context.Background())
 	require.Error(t, err)
+}
+
+// --- per-agent tokens ---
+
+const agentTokensYAML = `
+agents:
+  agent-prod:
+    token_env: AGENT_TOKEN_PROD
+  agent-data:
+    token_env: AGENT_TOKEN_DATA
+repos:
+  acme/infra:
+    agent: agent-prod
+`
+
+func (s *HandlerSuite) newHandlerWithAgentTokens() http.Handler {
+	cfgFile, err := orchestratorconfig.Parse([]byte(agentTokensYAML), func(key string) string {
+		return map[string]string{
+			"AGENT_TOKEN_PROD": "prod-token",
+			"AGENT_TOKEN_DATA": "data-token",
+		}[key]
+	})
+	require.NoError(s.T(), err)
+	return webserver.NewHandler(
+		log.Noop(),
+		s.scm,
+		s.publisher,
+		s.jobs,
+		s.unlocks,
+		&config.Config{SharedAuthToken: "secret"},
+		cfgFile,
+	)
+}
+
+func (s *HandlerSuite) tokenPOST(h http.Handler, token, path, body string) *httptest.ResponseRecorder {
+	s.T().Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func (s *HandlerSuite) TestAgentTokenIdentifiesAgent() {
+	h := s.newHandlerWithAgentTokens()
+
+	rec := s.tokenPOST(h, "prod-token", "/agent/jobs/claim", `{}`)
+	require.Equal(s.T(), http.StatusNoContent, rec.Code)
+	require.Equal(s.T(), []string{"agent-prod"}, s.jobs.claimed)
+
+	rec = s.tokenPOST(h, "data-token", "/agent/jobs/job-1/heartbeat", `{}`)
+	require.Equal(s.T(), http.StatusNoContent, rec.Code)
+	require.Equal(s.T(), []string{"agent-data"}, s.jobs.refreshed)
+}
+
+func (s *HandlerSuite) TestAgentTokenAcceptsMatchingBodyAgentID() {
+	h := s.newHandlerWithAgentTokens()
+
+	rec := s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/heartbeat", `{"agent_id":"agent-prod"}`)
+	require.Equal(s.T(), http.StatusNoContent, rec.Code)
+	require.Equal(s.T(), []string{"agent-prod"}, s.jobs.refreshed)
+}
+
+func (s *HandlerSuite) TestAgentTokenRejectsMismatchedBodyAgentID() {
+	h := s.newHandlerWithAgentTokens()
+	for _, path := range []string{
+		"/agent/jobs/claim",
+		"/agent/jobs/job-1/heartbeat",
+		"/agent/jobs/job-1/ack",
+		"/agent/jobs/job-1/result",
+		"/agent/jobs/job-1/periodic_result",
+	} {
+		rec := s.tokenPOST(h, "prod-token", path, `{"agent_id":"agent-data"}`)
+		require.Equal(s.T(), http.StatusForbidden, rec.Code, path)
+		require.Contains(s.T(), rec.Body.String(), "agent_id does not match token", path)
+	}
+	require.Empty(s.T(), s.jobs.claimed)
+	require.Empty(s.T(), s.jobs.refreshed)
+	require.Empty(s.T(), s.jobs.acked)
+	require.Empty(s.T(), s.jobs.committed)
+	require.Empty(s.T(), s.jobs.periodics)
+}
+
+func (s *HandlerSuite) TestAgentTokenRejectsUnknownAndSharedTokens() {
+	h := s.newHandlerWithAgentTokens()
+	for _, token := range []string{"", "wrong", "secret"} {
+		rec := s.tokenPOST(h, token, "/agent/jobs/job-1/heartbeat", `{}`)
+		require.Equal(s.T(), http.StatusUnauthorized, rec.Code, token)
+	}
+	require.Empty(s.T(), s.jobs.refreshed)
+}
+
+func (s *HandlerSuite) TestAgentTokenReachesEveryAgentRoute() {
+	h := s.newHandlerWithAgentTokens()
+
+	require.Equal(s.T(), http.StatusNoContent, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/ack", `{}`).Code)
+	require.Equal(s.T(), http.StatusNoContent, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/result", `{"result":"success"}`).Code)
+	require.Equal(s.T(), http.StatusNoContent, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/periodic_result", `{"output":"x"}`).Code)
+	require.Equal(s.T(), []string{"job-1"}, s.jobs.acked)
+	require.Len(s.T(), s.jobs.committed, 1)
+	require.Len(s.T(), s.jobs.periodics, 1)
+}
+
+func (s *HandlerSuite) TestWebhookRouteIgnoresAgentTokens() {
+	h := s.newHandlerWithAgentTokens()
+	s.scm.EXPECT().ParseWebhook(gomock.Any()).Return(nil, nil)
+
+	rec := s.tokenPOST(h, "", "/scm/webhook", `{}`)
+	require.Equal(s.T(), http.StatusOK, rec.Code)
 }
