@@ -40,6 +40,10 @@ orchestrator:
   extraVolumes: []
   # -- Extra volumeMounts on the orchestrator container (pass-through)
   extraVolumeMounts: []
+  # -- Orchestrator config for multi-team mode (agents, repos, permissions, apply gates).
+  # Rendered to a ConfigMap, mounted at /etc/terraplane/config/orchestrator.yaml, and
+  # ORCHESTRATOR_CONFIG_PATH is set. Empty keeps the single-team behaviour. See docs/multi-team.md.
+  config: {}
   # -- Pod resources
   resources: {}
   service:

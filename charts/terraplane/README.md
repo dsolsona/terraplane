@@ -11,6 +11,7 @@ Copy-pasteable values live under **[examples/](examples/)**:
 | [orchestrator](examples/orchestrator/) | Orchestrator only (ingress + webhooks) |
 | [agent](examples/agent/) | Agents only (remote orchestrator URL) |
 | [combined](examples/combined/) | Orchestrator + agent in one release (lab / single cluster) |
+| [multi-team](examples/multi-team/) | Orchestrator with per-agent tokens, per-repo permissions, and apply gates |
 
 ## Install
 
@@ -103,6 +104,32 @@ agentDefaults:
 
 `agentDefaults.extraVolumes` / `extraVolumeMounts` are concatenated with the matching per-agent lists (same merge rule as `envFrom`). Per-agent `serviceAccountName` wins when non-empty.
 
+## Multi-team mode
+
+Several teams can share one orchestrator, each with its own agent and permissions. Set `orchestrator.config` to the orchestrator config (agents, repos, permissions, apply gates). The chart renders it to a ConfigMap, mounts it at `/etc/terraplane/config/orchestrator.yaml`, and sets `ORCHESTRATOR_CONFIG_PATH`. A change to the config rolls the orchestrator pods.
+
+```yaml
+orchestrator:
+  envFrom:
+    - secretRef:
+        name: terraplane-orchestrator   # holds AGENT_TOKEN_PROD, AGENT_TOKEN_PLATFORM, ...
+  config:
+    agents:
+      agent-prod:
+        token_env: AGENT_TOKEN_PROD
+    repos:
+      acme/infra:
+        agent: agent-prod
+        permissions:
+          plan: ["@acme/engineering"]
+          apply: ["alice"]
+        apply_requires:
+          approved: true
+          mergeable: true
+```
+
+Each agent release then gets its own `SHARED_AUTH_TOKEN` matching the orchestrator-side env var, for example via a per-agent Secret in `agents[].envFrom`. `SHARED_AUTH_TOKEN` is not needed on the orchestrator in this mode. The GitHub token needs `read:org` for `@org/team` entries. Full reference, including what the config does not protect against: [docs/multi-team.md](../../docs/multi-team.md).
+
 Image tags follow release semver (`ghcr.io/terraplane-org/terraplane:<version>`). Chart `appVersion` matches the release; leave `image.tag` empty to use it. See [docs/release.md](../../docs/release.md).
 
 ## Values
@@ -123,6 +150,7 @@ Image tags follow release semver (`ghcr.io/terraplane-org/terraplane:<version>`)
 | orchestrator.envFrom | list | `[]` | Load env from existing ConfigMaps/Secrets (chart does not create secrets) |
 | orchestrator.extraVolumes | list | `[]` | Extra PodSpec volumes (pass-through; chart does not interpret volume types) |
 | orchestrator.extraVolumeMounts | list | `[]` | Extra volumeMounts on the orchestrator container (pass-through) |
+| orchestrator.config | object | `{}` | Orchestrator config for multi-team mode (agents, repos, permissions, apply gates). Rendered to a ConfigMap and mounted; sets `ORCHESTRATOR_CONFIG_PATH`. Empty keeps single-team behaviour. |
 | orchestrator.resources | object | `{}` | Pod resources |
 | orchestrator.service.type | string | `"ClusterIP"` | Kubernetes Service type |
 | orchestrator.service.port | int | `8080` | Service / container port |

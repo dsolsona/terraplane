@@ -3,6 +3,12 @@ Terraplane {{ .Chart.Version }} installed in namespace {{ include "terraplane.na
 {{- if .Values.orchestrator.enabled }}
 
 Orchestrator service: {{ include "terraplane.fullname" . }}-orchestrator:{{ .Values.orchestrator.service.port }}
+{{- if .Values.orchestrator.config }}
+
+Multi-team mode is on (orchestrator.config). Each agent listed under agents
+needs its token in the orchestrator Secret under the token_env name, and the
+same value as SHARED_AUTH_TOKEN on the agent. See docs/multi-team.md.
+{{- end }}
 {{- end }}
 {{- if .Values.agents }}
 
