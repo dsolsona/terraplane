@@ -12,6 +12,7 @@ import (
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/feedback"
 	"github.com/xyzjace/terraplane/pkg/log"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 	"github.com/xyzjace/terraplane/pkg/scm"
 	"github.com/xyzjace/terraplane/pkg/storage/models"
 	"github.com/xyzjace/terraplane/pkg/storage/repository"
@@ -39,6 +40,7 @@ type jobService struct {
 	lockRepository     repository.LockRepository
 	scmProvider        scm.Provider
 	scmPublisher       scm.Publisher
+	orchestratorConfig *orchestratorconfig.ConfigFile
 	jobLease           time.Duration
 	jobCleanupInterval time.Duration
 }
@@ -50,6 +52,7 @@ func NewJobService(
 	scmProvider scm.Provider,
 	scmPublisher scm.Publisher,
 	config *config.Config,
+	orchestratorConfig *orchestratorconfig.ConfigFile,
 ) JobService {
 	return &jobService{
 		logger:             logger,
@@ -57,6 +60,7 @@ func NewJobService(
 		lockRepository:     lockRepository,
 		scmProvider:        scmProvider,
 		scmPublisher:       scmPublisher,
+		orchestratorConfig: orchestratorConfig,
 		jobLease:           config.OrchestratorJobLease,
 		jobCleanupInterval: config.OrchestratorJobCleanupInterval,
 	}
@@ -88,6 +92,11 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	if err != nil {
 		return fmt.Errorf("failed to parse terraplane.yaml for repository %s at commit %s: %w", webhook.RepositorySlug, webhook.CommitSHA, err)
 	}
+	if !j.orchestratorConfig.Enabled() {
+		if err := config.ValidateAgents(); err != nil {
+			return fmt.Errorf("failed to parse terraplane.yaml for repository %s at commit %s: %w", webhook.RepositorySlug, webhook.CommitSHA, err)
+		}
+	}
 
 	stackNames, environmentNames, action := j.resolveStacksAndEnvironments(&cmd)
 
@@ -97,6 +106,8 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 	}
 
 	for _, stack := range resolvedStacks {
+		agent := j.agentFor(webhook.RepositorySlug, stack)
+
 		if action == string(models.JobActionApply) {
 			ok, err := j.acquireApplyLock(ctx, webhook, stack)
 			if err != nil {
@@ -124,7 +135,7 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 			stack.Name,
 			action,
 			payload,
-			stack.Agent,
+			agent,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to upsert pending job for repository %s pull request #%d: %w", webhook.RepositorySlug, webhook.PRNumber, err)
@@ -136,12 +147,22 @@ func (j *jobService) CreatePendingJobs(ctx context.Context, webhook *scm.Webhook
 			"pr", webhook.PRNumber,
 			"stack", stack.Name,
 			"action", action,
-			"agent", stack.Agent,
+			"agent", agent,
 			"job_id", job.ID,
 		)
 	}
 
 	return nil
+}
+
+// agentFor returns the agent that runs stack. The orchestrator config owns
+// routing when present; otherwise the agent comes from terraplane.yaml.
+func (j *jobService) agentFor(repo string, stack terraplaneconfig.ResolvedStack) string {
+	if !j.orchestratorConfig.Enabled() {
+		return stack.Agent
+	}
+	agent, _ := j.orchestratorConfig.AgentForStack(repo, stack.Name)
+	return agent
 }
 
 func (j *jobService) acquireApplyLock(ctx context.Context, webhook *scm.Webhook, stack terraplaneconfig.ResolvedStack) (bool, error) {

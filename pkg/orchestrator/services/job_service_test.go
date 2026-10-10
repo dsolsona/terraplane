@@ -14,6 +14,7 @@ import (
 	"github.com/xyzjace/terraplane/pkg/command"
 	"github.com/xyzjace/terraplane/pkg/log"
 	"github.com/xyzjace/terraplane/pkg/orchestrator/services"
+	"github.com/xyzjace/terraplane/pkg/orchestratorconfig"
 	"github.com/xyzjace/terraplane/pkg/scm"
 	"github.com/xyzjace/terraplane/pkg/scm/mock_scm"
 	"github.com/xyzjace/terraplane/pkg/storage/models"
@@ -44,7 +45,7 @@ func (s *JobServiceSuite) SetupTest() {
 	s.svc = services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
 		OrchestratorJobLease:           time.Minute,
 		OrchestratorJobCleanupInterval: 30 * 24 * time.Hour,
-	})
+	}, &orchestratorconfig.ConfigFile{})
 }
 
 func webhook(comment string) *scm.Webhook {
@@ -521,7 +522,7 @@ func (s *JobServiceSuite) TestCleanupExpiredJobsError() {
 func (s *JobServiceSuite) TestCleanupExpiredJobsDisabledWhenIntervalZero() {
 	svc := services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
 		OrchestratorJobCleanupInterval: 0,
-	})
+	}, &orchestratorconfig.ConfigFile{})
 	require.NoError(s.T(), svc.CleanupExpiredJobs(context.Background()))
 }
 
@@ -806,4 +807,57 @@ func (s *JobServiceSuite) TestHandlePeriodicResultUpdatePayloadFailureIsBestEffo
 	s.jobs.EXPECT().UpdatePayload(gomock.Any(), job, gomock.Any()).Return(errors.New("db"))
 
 	require.NoError(s.T(), s.svc.HandlePeriodicResult(context.Background(), "job-1", "agent-a", "out"))
+}
+
+// --- orchestrator-owned routing ---
+
+const routedYAML = `
+environments:
+  - name: default
+    stacks:
+      - name: a
+        dir: stacks/a
+      - name: b
+        agent: agent-from-yaml
+        dir: stacks/b
+`
+
+func (s *JobServiceSuite) routedService() services.JobService {
+	cfgFile, err := orchestratorconfig.Parse([]byte(`
+agents:
+  agent-prod:
+    token_env: T1
+  agent-data:
+    token_env: T2
+repos:
+  acme/infra:
+    agent: agent-prod
+    stacks:
+      b:
+        agent: agent-data
+`), func(key string) string { return key })
+	require.NoError(s.T(), err)
+	return services.NewJobService(log.Noop(), s.jobs, s.locks, s.scm, s.publisher, &config.Config{
+		OrchestratorJobLease: time.Minute,
+	}, cfgFile)
+}
+
+func (s *JobServiceSuite) TestRoutingUsesOrchestratorConfigAndIgnoresYAMLAgents() {
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(routedYAML, nil)
+	s.expectUpsert("a", "stacks/a", "plan", "agent-prod", "job-a")
+	s.expectUpsert("b", "stacks/b", "plan", "agent-data", "job-b")
+
+	err := s.routedService().CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
+func (s *JobServiceSuite) TestLegacyRoutingRequiresYAMLAgents() {
+	wh := webhook("terraplane plan")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(routedYAML, nil)
+
+	err := s.svc.CreatePendingJobs(context.Background(), wh)
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "failed to parse terraplane.yaml")
+	require.Contains(s.T(), err.Error(), `stack "a" in environment "default" has no agent`)
 }

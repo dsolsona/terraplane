@@ -69,16 +69,22 @@ environments:
 		require.Contains(t, err.Error(), `stack name "shared" is not unique`)
 	})
 
-	t.Run("missing agent", func(t *testing.T) {
-		_, err := terraplaneconfig.ParseConfigFile([]byte(`
+	t.Run("missing agent parses but fails ValidateAgents", func(t *testing.T) {
+		cfg, err := terraplaneconfig.ParseConfigFile([]byte(`
 environments:
   - name: staging
     stacks:
       - name: a
         dir: stacks/a
 `))
+		require.NoError(t, err)
+		err = cfg.ValidateAgents()
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "has no agent")
+		require.Contains(t, err.Error(), `stack "a" in environment "staging" has no agent`)
+
+		valid, err := terraplaneconfig.ParseConfigFile([]byte(validYAML))
+		require.NoError(t, err)
+		require.NoError(t, valid.ValidateAgents())
 	})
 
 	t.Run("missing dir", func(t *testing.T) {
