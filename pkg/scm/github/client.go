@@ -36,9 +36,17 @@ type Client interface {
 }
 
 type client struct {
-	accessToken string
-	httpClient  *http.Client
-	apiURL      string
+	tokens     tokenSource
+	httpClient *http.Client
+	apiURL     string
+}
+
+const githubAPIURL = "https://api.github.com"
+
+// repoOwner returns the account part of an owner/name slug.
+func repoOwner(repo string) string {
+	owner, _, _ := strings.Cut(repo, "/")
+	return owner
 }
 
 func (c *client) ReactToComment(ctx context.Context, repo string, commentID int, reaction string) error {
@@ -48,7 +56,7 @@ func (c *client) ReactToComment(ctx context.Context, repo string, commentID int,
 		return fmt.Errorf("failed to marshal reaction payload for repository %s comment #%d: %w", repo, commentID, err)
 	}
 
-	req, err := c.newRequest(ctx, http.MethodPost, u, bytes.NewReader(payloadBytes))
+	req, err := c.newRequest(ctx, repoOwner(repo), http.MethodPost, u, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return err
 	}
@@ -75,7 +83,7 @@ func (c *client) GetCommitSHA(ctx context.Context, repo string, prNumber int) (s
 			SHA string `json:"sha"`
 		} `json:"head"`
 	}
-	if err := c.getJSON(ctx, u, &resp); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), u, &resp); err != nil {
 		return "", fmt.Errorf("failed to fetch pull request head commit for repository %s PR #%d: %w", repo, prNumber, err)
 	}
 	if resp.Head.SHA == "" {
@@ -98,7 +106,7 @@ func (c *client) GetFile(ctx context.Context, repo string, path string, revision
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
-	if err := c.getJSON(ctx, u, &resp); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), u, &resp); err != nil {
 		return "", fmt.Errorf("failed to fetch file %q at revision %q from repository %s: %w", path, revision, repo, err)
 	}
 	if resp.Encoding != "base64" {
@@ -111,8 +119,8 @@ func (c *client) GetFile(ctx context.Context, repo string, path string, revision
 	return string(decoded), nil
 }
 
-func (c *client) getJSON(ctx context.Context, u string, out any) error {
-	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
+func (c *client) getJSON(ctx context.Context, owner, u string, out any) error {
+	req, err := c.newRequest(ctx, owner, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
@@ -136,16 +144,20 @@ func (c *client) getJSON(ctx context.Context, u string, out any) error {
 	return nil
 }
 
-func (c *client) newRequest(ctx context.Context, method, u string, body io.Reader) (*http.Request, error) {
-	if c.accessToken == "" {
-		return nil, fmt.Errorf("GitHub access token is not configured. Please set ORCHESTRATOR_GITHUB_ACCESS_TOKEN in the environment")
+// newRequest builds an authenticated request. owner is the account whose
+// repositories the request concerns, which selects the installation when
+// authenticating as a GitHub App.
+func (c *client) newRequest(ctx context.Context, owner, method, u string, body io.Reader) (*http.Request, error) {
+	token, err := c.tokens.Token(ctx, owner)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GitHub API request to %s: %w", u, err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -160,7 +172,7 @@ func (c *client) WriteComment(ctx context.Context, repo string, prNumber int, bo
 		return 0, fmt.Errorf("failed to marshal comment payload for repository %s PR #%d: %w", repo, prNumber, err)
 	}
 
-	req, err := c.newRequest(ctx, http.MethodPost, u, bytes.NewReader(payloadBytes))
+	req, err := c.newRequest(ctx, repoOwner(repo), http.MethodPost, u, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return 0, err
 	}
@@ -190,7 +202,7 @@ func (c *client) UpdateComment(ctx context.Context, repo string, prNumber int, b
 		return fmt.Errorf("failed to marshal comment payload for repository %s PR #%d: %w", repo, prNumber, err)
 	}
 
-	req, err := c.newRequest(ctx, http.MethodPatch, u, bytes.NewReader(payloadBytes))
+	req, err := c.newRequest(ctx, repoOwner(repo), http.MethodPatch, u, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return err
 	}
@@ -213,7 +225,7 @@ func (c *client) UpdateComment(ctx context.Context, repo string, prNumber int, b
 // rather than from a webhook body anyone with the secret could forge.
 func (c *client) GetIssueComment(ctx context.Context, repo string, commentID int) (scm.IssueComment, error) {
 	u := fmt.Sprintf("%s/repos/%s/issues/comments/%d", c.apiURL, repo, commentID)
-	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
+	req, err := c.newRequest(ctx, repoOwner(repo), http.MethodGet, u, nil)
 	if err != nil {
 		return scm.IssueComment{}, err
 	}
@@ -258,7 +270,7 @@ func (c *client) PullRequestApproved(ctx context.Context, repo string, prNumber 
 			Login string `json:"login"`
 		} `json:"user"`
 	}
-	if err := c.getJSON(ctx, u, &reviews); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), u, &reviews); err != nil {
 		return false, fmt.Errorf("failed to fetch reviews for repository %s PR #%d: %w", repo, prNumber, err)
 	}
 
@@ -291,7 +303,7 @@ func (c *client) ChecksGreen(ctx context.Context, repo string, sha string) (bool
 		State      string `json:"state"`
 		TotalCount int    `json:"total_count"`
 	}
-	if err := c.getJSON(ctx, statusURL, &status); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), statusURL, &status); err != nil {
 		return false, fmt.Errorf("failed to fetch commit status for repository %s commit %s: %w", repo, sha, err)
 	}
 	if status.TotalCount > 0 && status.State != "success" {
@@ -305,7 +317,7 @@ func (c *client) ChecksGreen(ctx context.Context, repo string, sha string) (bool
 			Conclusion string `json:"conclusion"`
 		} `json:"check_runs"`
 	}
-	if err := c.getJSON(ctx, runsURL, &runs); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), runsURL, &runs); err != nil {
 		return false, fmt.Errorf("failed to fetch check runs for repository %s commit %s: %w", repo, sha, err)
 	}
 	for _, run := range runs.CheckRuns {
@@ -334,7 +346,7 @@ func (c *client) GetPullRequest(ctx context.Context, repo string, prNumber int) 
 			Ref string `json:"ref"`
 		} `json:"base"`
 	}
-	if err := c.getJSON(ctx, u, &resp); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), u, &resp); err != nil {
 		return scm.PullRequest{}, fmt.Errorf("failed to fetch pull request for repository %s PR #%d: %w", repo, prNumber, err)
 	}
 	return scm.PullRequest{
@@ -353,7 +365,7 @@ func (c *client) CommitsBehind(ctx context.Context, repo string, base string, he
 	var resp struct {
 		BehindBy int `json:"behind_by"`
 	}
-	if err := c.getJSON(ctx, u, &resp); err != nil {
+	if err := c.getJSON(ctx, repoOwner(repo), u, &resp); err != nil {
 		return 0, fmt.Errorf("failed to compare %s with %s in repository %s: %w", head, base, repo, err)
 	}
 	return resp.BehindBy, nil
@@ -363,7 +375,7 @@ func (c *client) CommitsBehind(ctx context.Context, repo string, base string, he
 // and for callers whose token lacks read:org, so both read as "not a member".
 func (c *client) TeamMember(ctx context.Context, org string, team string, user string) (bool, error) {
 	u := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", c.apiURL, url.PathEscape(org), url.PathEscape(team), url.PathEscape(user))
-	req, err := c.newRequest(ctx, http.MethodGet, u, nil)
+	req, err := c.newRequest(ctx, org, http.MethodGet, u, nil)
 	if err != nil {
 		return false, err
 	}
@@ -403,10 +415,15 @@ func appendRefQuery(u, ref string) (string, error) {
 	return parsed.String(), nil
 }
 
-func NewClient(config *config.Config) Client {
-	return &client{
-		accessToken: config.OrchestratorGithubAccessToken,
-		httpClient:  &http.Client{},
-		apiURL:      "https://api.github.com",
+func NewClient(config *config.Config) (Client, error) {
+	httpClient := &http.Client{}
+	tokens, err := newTokenSource(config, githubAPIURL, httpClient)
+	if err != nil {
+		return nil, err
 	}
+	return &client{
+		tokens:     tokens,
+		httpClient: httpClient,
+		apiURL:     githubAPIURL,
+	}, nil
 }

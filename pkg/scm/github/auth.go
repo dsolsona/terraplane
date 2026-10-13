@@ -1,0 +1,307 @@
+package github
+
+import (
+	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/xyzjace/terraplane/config"
+)
+
+// tokenSource supplies the bearer token for GitHub API requests about the
+// repositories of one account (an organisation or a user).
+type tokenSource interface {
+	Token(ctx context.Context, owner string) (string, error)
+}
+
+// staticToken is a personal access token: one token for every account.
+type staticToken string
+
+func (t staticToken) Token(context.Context, string) (string, error) {
+	if t == "" {
+		return "", fmt.Errorf("GitHub credentials are not configured. Please set ORCHESTRATOR_GITHUB_ACCESS_TOKEN or the ORCHESTRATOR_GITHUB_APP_* settings in the environment")
+	}
+	return string(t), nil
+}
+
+const (
+	appJWTLifetime      = 9 * time.Minute // GitHub rejects app JWTs valid for more than ten
+	appTokenRefreshSlop = 5 * time.Minute // installation tokens are renewed this long before they expire
+)
+
+// appTokenSource authenticates as a GitHub App. A JWT signed with the app's
+// private key is exchanged for an installation token, which lasts an hour
+// and is scoped to one account's installation. Tokens are cached per
+// installation and installations per account.
+type appTokenSource struct {
+	appID          string
+	installationID string // optional; when set, every account uses this installation
+	key            *rsa.PrivateKey
+	apiURL         string
+	httpClient     *http.Client
+	now            func() time.Time
+
+	mu            sync.Mutex
+	installations map[string]string            // owner → installation ID
+	tokens        map[string]installationToken // installation ID → token
+}
+
+type installationToken struct {
+	value   string
+	expires time.Time
+}
+
+func newAppTokenSource(appID, installationID string, key *rsa.PrivateKey, apiURL string, httpClient *http.Client) *appTokenSource {
+	return &appTokenSource{
+		appID:          appID,
+		installationID: installationID,
+		key:            key,
+		apiURL:         apiURL,
+		httpClient:     httpClient,
+		now:            time.Now,
+		installations:  make(map[string]string),
+		tokens:         make(map[string]installationToken),
+	}
+}
+
+func (a *appTokenSource) Token(ctx context.Context, owner string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	installationID, err := a.installation(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+
+	if token, ok := a.tokens[installationID]; ok && a.now().Add(appTokenRefreshSlop).Before(token.expires) {
+		return token.value, nil
+	}
+
+	token, err := a.createInstallationToken(ctx, installationID)
+	if err != nil {
+		return "", err
+	}
+	a.tokens[installationID] = token
+	return token.value, nil
+}
+
+func (a *appTokenSource) installation(ctx context.Context, owner string) (string, error) {
+	if a.installationID != "" {
+		return a.installationID, nil
+	}
+	if owner == "" {
+		return "", fmt.Errorf("GitHub App installation lookup needs an account name; set ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID to use a fixed installation")
+	}
+	if id, ok := a.installations[owner]; ok {
+		return id, nil
+	}
+
+	id, err := a.lookupInstallation(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	a.installations[owner] = id
+	return id, nil
+}
+
+// lookupInstallation asks for the account's installation of the app, trying
+// the organisation endpoint first and the user endpoint second.
+func (a *appTokenSource) lookupInstallation(ctx context.Context, owner string) (string, error) {
+	for _, path := range []string{"/orgs/%s/installation", "/users/%s/installation"} {
+		id, found, err := a.getInstallation(ctx, a.apiURL+fmt.Sprintf(path, url.PathEscape(owner)))
+		if err != nil {
+			return "", err
+		}
+		if found {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("GitHub App %s is not installed for account %s", a.appID, owner)
+}
+
+func (a *appTokenSource) getInstallation(ctx context.Context, u string) (string, bool, error) {
+	req, err := a.newAppRequest(ctx, http.MethodGet, u)
+	if err != nil {
+		return "", false, err
+	}
+
+	res, err := a.httpClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to execute GitHub API request to %s: %w", u, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	switch res.StatusCode {
+	case http.StatusOK:
+		var resp struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+			return "", false, fmt.Errorf("failed to decode GitHub App installation response from %s: %w", u, err)
+		}
+		return strconv.FormatInt(resp.ID, 10), true, nil
+	case http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, res.Body)
+		return "", false, nil
+	default:
+		body, _ := io.ReadAll(res.Body)
+		return "", false, fmt.Errorf("GitHub API request to %s returned unexpected status %s: %s", u, res.Status, strings.TrimSpace(string(body)))
+	}
+}
+
+func (a *appTokenSource) createInstallationToken(ctx context.Context, installationID string) (installationToken, error) {
+	u := fmt.Sprintf("%s/app/installations/%s/access_tokens", a.apiURL, url.PathEscape(installationID))
+	req, err := a.newAppRequest(ctx, http.MethodPost, u)
+	if err != nil {
+		return installationToken{}, err
+	}
+
+	res, err := a.httpClient.Do(req)
+	if err != nil {
+		return installationToken{}, fmt.Errorf("failed to execute GitHub API request to create an installation token for installation %s: %w", installationID, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(res.Body)
+		return installationToken{}, fmt.Errorf("GitHub API request to create an installation token for installation %s returned unexpected status %s: %s", installationID, res.Status, strings.TrimSpace(string(body)))
+	}
+
+	var resp struct {
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return installationToken{}, fmt.Errorf("failed to decode GitHub installation token response for installation %s: %w", installationID, err)
+	}
+	if resp.Token == "" {
+		return installationToken{}, fmt.Errorf("GitHub returned an empty installation token for installation %s", installationID)
+	}
+	return installationToken{value: resp.Token, expires: resp.ExpiresAt}, nil
+}
+
+// newAppRequest builds a request authenticated as the app itself, with a
+// freshly signed JWT.
+func (a *appTokenSource) newAppRequest(ctx context.Context, method, u string) (*http.Request, error) {
+	jwt, err := a.jwt()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GitHub API request to %s: %w", u, err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	return req, nil
+}
+
+// jwt signs the token GitHub expects from an app: RS256 over a fixed header
+// and claims naming the app as issuer. iat is backdated a minute to absorb
+// clock skew between this host and GitHub.
+func (a *appTokenSource) jwt() (string, error) {
+	now := a.now()
+	claims, err := json.Marshal(map[string]any{
+		"iat": now.Add(-time.Minute).Unix(),
+		"exp": now.Add(appJWTLifetime).Unix(),
+		"iss": a.appID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to encode GitHub App JWT claims: %w", err)
+	}
+
+	signingInput := base64URL([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + base64URL(claims)
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, a.key, crypto.SHA256, digest[:])
+	if err != nil {
+		return "", fmt.Errorf("failed to sign GitHub App JWT: %w", err)
+	}
+	return signingInput + "." + base64URL(signature), nil
+}
+
+func base64URL(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// parsePrivateKey accepts the PKCS#1 key GitHub issues and PKCS#8 for keys
+// that have been converted.
+func parsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("GitHub App private key is not PEM encoded")
+	}
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse GitHub App private key: %w", err)
+		}
+		return key, nil
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse GitHub App private key: %w", err)
+		}
+		rsaKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("GitHub App private key is not an RSA key")
+		}
+		return rsaKey, nil
+	default:
+		return nil, fmt.Errorf("GitHub App private key has unsupported PEM type %q", block.Type)
+	}
+}
+
+// newTokenSource picks personal token or GitHub App authentication from the
+// configuration. Neither configured yields a source that fails on first use
+// with a message naming the settings, so an orchestrator without GitHub
+// credentials still starts, as it does today.
+func newTokenSource(cfg *config.Config, apiURL string, httpClient *http.Client) (tokenSource, error) {
+	hasToken := cfg.OrchestratorGithubAccessToken != ""
+	hasApp := cfg.OrchestratorGithubAppID != "" || cfg.OrchestratorGithubAppPrivateKey != "" || cfg.OrchestratorGithubAppPrivateKeyPath != ""
+
+	if hasToken && hasApp {
+		return nil, fmt.Errorf("configure either ORCHESTRATOR_GITHUB_ACCESS_TOKEN or the ORCHESTRATOR_GITHUB_APP_* settings, not both")
+	}
+	if !hasApp {
+		return staticToken(cfg.OrchestratorGithubAccessToken), nil
+	}
+
+	if strings.TrimSpace(cfg.OrchestratorGithubAppID) == "" {
+		return nil, fmt.Errorf("ORCHESTRATOR_GITHUB_APP_ID is required to authenticate as a GitHub App")
+	}
+
+	pemData := cfg.OrchestratorGithubAppPrivateKey
+	if pemData == "" && cfg.OrchestratorGithubAppPrivateKeyPath != "" {
+		data, err := os.ReadFile(cfg.OrchestratorGithubAppPrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_PATH: %w", err)
+		}
+		pemData = string(data)
+	}
+	if strings.TrimSpace(pemData) == "" {
+		return nil, fmt.Errorf("ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY or ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_PATH is required to authenticate as a GitHub App")
+	}
+
+	key, err := parsePrivateKey([]byte(pemData))
+	if err != nil {
+		return nil, err
+	}
+	return newAppTokenSource(strings.TrimSpace(cfg.OrchestratorGithubAppID), strings.TrimSpace(cfg.OrchestratorGithubAppInstallationID), key, apiURL, httpClient), nil
+}

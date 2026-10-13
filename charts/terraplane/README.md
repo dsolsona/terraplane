@@ -27,6 +27,10 @@ kubectl -n terraplane create secret generic terraplane-orchestrator \
   --from-literal=ORCHESTRATOR_GITHUB_ACCESS_TOKEN='ghp_...' \
   --from-literal=ORCHESTRATOR_GITHUB_WEBHOOK_SECRET='...'
 
+# Or authenticate as a GitHub App instead of a token:
+#   --from-literal=ORCHESTRATOR_GITHUB_APP_ID='12345' \
+#   --from-file=ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY=./terraplane.private-key.pem \
+
 helm install terraplane-orch oci://ghcr.io/terraplane-org/charts/terraplane \
   --version 0.3.0 \
   -n terraplane \

@@ -106,14 +106,31 @@ cannot be reached the apply is blocked rather than let through.
 
 Stacks the user may act on still run; only the denied ones are skipped.
 
-## GitHub token requirements
+## GitHub credentials
 
-`ORCHESTRATOR_GITHUB_ACCESS_TOKEN` additionally needs permission to read
-organisation membership when `@org/team` entries are used: `read:org` on a
-classic token, or organisation "Members: read" on a fine-grained token.
-Without it GitHub answers "not found" for every membership lookup, which
-terraplane reads as "not a member", so team entries would deny everyone.
-User entries do not need it.
+The orchestrator authenticates to GitHub either with a personal access token
+(`ORCHESTRATOR_GITHUB_ACCESS_TOKEN`) or as a GitHub App
+(`ORCHESTRATOR_GITHUB_APP_ID` plus `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY` or
+`ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_PATH`). An app is the better fit for a
+shared orchestrator: no token tied to a person, permissions limited to what is
+listed below, hour-long installation tokens minted on demand, and comments
+posted under the app's own identity. Without
+`ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` the orchestrator finds the
+installation for each repository's organisation or user and caches it, so one
+app installed in several organisations works.
+
+An app needs these repository permissions: Contents read, Metadata read, Pull
+requests read, Issues write (comments and reactions), Checks read, Commit
+statuses read; and the organisation permission Members read when `@org/team`
+entries are used. Subscribe it to the `issue_comment` event and point its
+webhook at `/scm/webhook` with `ORCHESTRATOR_GITHUB_WEBHOOK_SECRET`.
+
+A personal access token additionally needs permission to read organisation
+membership when `@org/team` entries are used: `read:org` on a classic token,
+or organisation "Members: read" on a fine-grained token. Without it GitHub
+answers "not found" for every membership lookup, which terraplane reads as
+"not a member", so team entries would deny everyone. User entries do not need
+it.
 
 Membership answers are cached for `ORCHESTRATOR_TEAM_CACHE_TTL` (default
 `5m`). A user removed from a team keeps access for up to that long.
