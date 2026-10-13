@@ -2,10 +2,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/xyzjace/terraplane/pkg/storage/models"
 )
+
+// ErrJobNotFound is returned by Get when no job has the given ID.
+var ErrJobNotFound = errors.New("job not found")
 
 //go:generate mockgen -source=job_repository.go -destination=mock_repository/mock_job_repository.go -package=mock_repository
 

@@ -300,6 +300,40 @@ entry under Unreleased.
 - Should an agent's allowed repos also be enforced on the agent side? Not needed while the
   orchestrator owns routing, but it would defend against a compromised orchestrator.
 
+## Clone tokens (PR 8)
+
+Agents clone with a deploy key today, one key per agent, registered by hand on every
+repository and readable by anyone on the agent host. With the orchestrator authenticating as a
+GitHub App, the key can go: the orchestrator mints a token per job and the agent uses it once.
+
+Flow, agent in `AGENT_SCM_AUTH=app` mode:
+
+1. The agent claims a job as before. The claim response is unchanged; no token travels with
+   the job, so nothing secret lands in the `jobs` table or in agent logs of the command.
+2. Right before cloning, the agent calls `POST /agent/jobs/{id}/clone_token` with its agent
+   token. The orchestrator checks the job exists, belongs to that agent (per-agent tokens from
+   PR 2), and is `claimed` or `running`, then asks GitHub for an installation token with
+   `repositories: [<name>]` and `permissions: {contents: read, metadata: read}`. The token is
+   returned once and remembered in memory, keyed by job, for revocation.
+3. The agent passes the token to git as an `Authorization: Basic` header through
+   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, with `GIT_TERMINAL_PROMPT=0`.
+   The header never appears on argv, in `.git/config`, or on disk, and the remote URL is the
+   plain HTTPS URL.
+4. When the job's result arrives, when the reaper fails or returns it, or when a second token
+   is issued for the same job, the orchestrator revokes the previous token
+   (`DELETE /installation/token`). Revocation is best-effort and logged; GitHub expires the
+   token after an hour in any case.
+
+Boundaries:
+
+- A personal access token cannot be narrowed, so an orchestrator in PAT mode answers 501 and
+  the agent reports that it must use SSH. The PAT itself is never handed to an agent.
+- A stolen agent token yields clone tokens only for jobs routed to that agent, the same
+  repositories it could already clone with its deploy key, and only while a job is in flight.
+- Private modules in sibling repositories over `git::https` are out of scope for the token by
+  design; registries, same-repository modules, or SSH mode cover those cases.
+- The endpoint is additive: SSH agents never call it, so mixed agent versions keep working.
+
 ## Checklist
 
 - [x] PR 1 config file loader
@@ -309,6 +343,7 @@ entry under Unreleased.
 - [x] PR 5 verify commands against the GitHub API
 - [x] PR 6 apply gates (`approved`, `mergeable`, `undiverged`, `checks_green`, open PR)
 - [x] PR 7 packaging and docs (`docs/multi-team.md` is the user-facing reference)
+- [x] PR 8 per-job clone tokens (`AGENT_SCM_AUTH=app`), after GitHub App authentication landed
 
 ## Follow-ups not in this plan
 
@@ -318,5 +353,7 @@ entry under Unreleased.
 - Scheduled drift plans per stack against `main`.
 - Startup probe for `read:org` so team-based permissions cannot deny silently.
 - Pagination for reviews and check runs beyond 100.
+- Revoke clone tokens for claims the reaper returns to `pending`: the repository reports only a
+  count today, so such a token stays valid until GitHub expires it or the job is re-issued one.
 - Upstreaming: PRs 1 to 7 are individually upstreamable in order; each branch starts from the
   previous PR's commit.

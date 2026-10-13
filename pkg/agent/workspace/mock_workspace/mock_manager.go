@@ -56,18 +56,18 @@ func (mr *MockManagerMockRecorder) FetchWorkspace(ctx, repo, revision, stack any
 }
 
 // ProvisionWorkspace mocks base method.
-func (m *MockManager) ProvisionWorkspace(ctx context.Context, repo, revision, stack string) (string, error) {
+func (m *MockManager) ProvisionWorkspace(ctx context.Context, jobID, repo, revision, stack string) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProvisionWorkspace", ctx, repo, revision, stack)
+	ret := m.ctrl.Call(m, "ProvisionWorkspace", ctx, jobID, repo, revision, stack)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ProvisionWorkspace indicates an expected call of ProvisionWorkspace.
-func (mr *MockManagerMockRecorder) ProvisionWorkspace(ctx, repo, revision, stack any) *gomock.Call {
+func (mr *MockManagerMockRecorder) ProvisionWorkspace(ctx, jobID, repo, revision, stack any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProvisionWorkspace", reflect.TypeOf((*MockManager)(nil).ProvisionWorkspace), ctx, repo, revision, stack)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProvisionWorkspace", reflect.TypeOf((*MockManager)(nil).ProvisionWorkspace), ctx, jobID, repo, revision, stack)
 }
 
 // RemoveWorkspace mocks base method.
@@ -82,4 +82,43 @@ func (m *MockManager) RemoveWorkspace(ctx context.Context, path string) error {
 func (mr *MockManagerMockRecorder) RemoveWorkspace(ctx, path any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveWorkspace", reflect.TypeOf((*MockManager)(nil).RemoveWorkspace), ctx, path)
+}
+
+// MockCloneTokenSource is a mock of CloneTokenSource interface.
+type MockCloneTokenSource struct {
+	ctrl     *gomock.Controller
+	recorder *MockCloneTokenSourceMockRecorder
+	isgomock struct{}
+}
+
+// MockCloneTokenSourceMockRecorder is the mock recorder for MockCloneTokenSource.
+type MockCloneTokenSourceMockRecorder struct {
+	mock *MockCloneTokenSource
+}
+
+// NewMockCloneTokenSource creates a new mock instance.
+func NewMockCloneTokenSource(ctrl *gomock.Controller) *MockCloneTokenSource {
+	mock := &MockCloneTokenSource{ctrl: ctrl}
+	mock.recorder = &MockCloneTokenSourceMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockCloneTokenSource) EXPECT() *MockCloneTokenSourceMockRecorder {
+	return m.recorder
+}
+
+// CloneToken mocks base method.
+func (m *MockCloneTokenSource) CloneToken(ctx context.Context, jobID, agentID string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CloneToken", ctx, jobID, agentID)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CloneToken indicates an expected call of CloneToken.
+func (mr *MockCloneTokenSourceMockRecorder) CloneToken(ctx, jobID, agentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloneToken", reflect.TypeOf((*MockCloneTokenSource)(nil).CloneToken), ctx, jobID, agentID)
 }

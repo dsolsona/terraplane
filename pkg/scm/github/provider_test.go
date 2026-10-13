@@ -335,3 +335,14 @@ func (s *ProviderSuite) TestPullRequestLookupsDelegateToClient() {
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), 2, behind)
 }
+
+func (s *ProviderSuite) TestCloneTokensDelegateToClient() {
+	want := scm.CloneToken{Token: "ghs_abc"}
+	s.client.EXPECT().CloneToken(gomock.Any(), "acme/infra").Return(want, nil)
+	got, err := s.prov.CloneToken(context.Background(), "acme/infra")
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), want, got)
+
+	s.client.EXPECT().RevokeCloneToken(gomock.Any(), "ghs_abc").Return(nil)
+	require.NoError(s.T(), s.prov.RevokeCloneToken(context.Background(), "ghs_abc"))
+}

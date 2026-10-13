@@ -136,6 +136,32 @@ it.
 Membership answers are cached for `ORCHESTRATOR_TEAM_CACHE_TTL` (default
 `5m`). A user removed from a team keeps access for up to that long.
 
+## Cloning without deploy keys
+
+Agents clone over SSH with a deploy key by default (`AGENT_SCM_SSH_KEY_PATH`).
+When the orchestrator authenticates as a GitHub App, an agent can set
+`AGENT_SCM_AUTH=app` instead and clone over HTTPS with a token the orchestrator
+mints for each job:
+
+- The orchestrator asks GitHub for an installation token restricted to the
+  job's repository with Contents read and Metadata read only. Nothing else the
+  app may do is delegated.
+- The agent fetches the token from `POST /agent/jobs/{id}/clone_token` with its
+  own agent token, only for a job it has claimed, right before cloning. The
+  token is never stored in the database, never part of the job, and never
+  logged.
+- git receives it as an `Authorization` header through environment-based
+  config, so it is not on a command line, in `.git/config`, or on disk. The
+  remote URL stays plain.
+- When the job finishes, or the reaper fails it, the orchestrator revokes the
+  token. GitHub expires it after an hour regardless.
+
+With a personal access token the orchestrator answers 501, because a token tied
+to a person cannot be narrowed to one repository; those agents keep using SSH.
+Private Terraform modules in other repositories fetched over `git::https` are
+outside the token's scope: use a registry, the same repository, or SSH mode for
+those agents.
+
 ## Things the config does not protect against
 
 - **Plan permission is code execution on the agent.** `terraform init`

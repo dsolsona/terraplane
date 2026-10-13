@@ -16,6 +16,7 @@ func TestNewRepositoryAccessGitHub(t *testing.T) {
 	require.Equal(t, "github", repoAccess.Name())
 	require.Equal(t, "github.com", repoAccess.SSHHost())
 	require.Equal(t, "git@github.com:acme/infra.git", repoAccess.CloneURL("acme/infra"))
+	require.Equal(t, "https://github.com/acme/infra.git", repoAccess.HTTPSCloneURL("acme/infra"))
 }
 
 func TestNewProviderGitHub(t *testing.T) {

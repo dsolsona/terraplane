@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/xyzjace/terraplane/config"
@@ -33,6 +34,9 @@ type JobService interface {
 	CommitJobResult(ctx context.Context, jobID, agentID, result, output, errMsg string) error
 	CleanupExpiredJobs(ctx context.Context) error
 	HandlePeriodicResult(ctx context.Context, jobID, agentID, output string) error
+	// IssueCloneToken mints a token the job's agent can clone the repository
+	// with. The token is revoked when the job ends.
+	IssueCloneToken(ctx context.Context, jobID, agentID string) (scm.CloneToken, error)
 }
 
 type jobService struct {
@@ -45,6 +49,12 @@ type jobService struct {
 	authorizer         authz.Authorizer
 	jobLease           time.Duration
 	jobCleanupInterval time.Duration
+
+	// cloneTokens holds the token issued to each job until it is revoked.
+	// Tokens stay in memory only: an orchestrator restart loses them, and
+	// GitHub expires them on its own within the hour.
+	cloneTokensMu sync.Mutex
+	cloneTokens   map[string]string // job ID → token
 }
 
 func NewJobService(
@@ -67,6 +77,7 @@ func NewJobService(
 		authorizer:         authorizer,
 		jobLease:           config.OrchestratorJobLease,
 		jobCleanupInterval: config.OrchestratorJobCleanupInterval,
+		cloneTokens:        make(map[string]string),
 	}
 }
 
@@ -361,7 +372,11 @@ func (j *jobService) ReleaseClaim(ctx context.Context, jobID string) error {
 }
 
 func (j *jobService) FailClaimedJob(ctx context.Context, jobID, errMsg string) error {
-	return j.jobRepository.FailClaimedJob(ctx, jobID, errMsg)
+	if err := j.jobRepository.FailClaimedJob(ctx, jobID, errMsg); err != nil {
+		return err
+	}
+	j.revokeCloneToken(ctx, jobID)
+	return nil
 }
 
 func (j *jobService) ReapExpiredClaims(ctx context.Context) error {
@@ -374,6 +389,7 @@ func (j *jobService) ReapExpiredClaims(ctx context.Context) error {
 	}
 
 	for _, job := range result.RunningFailed {
+		j.revokeCloneToken(ctx, job.ID)
 		if job.Action != models.JobActionApply {
 			continue
 		}
@@ -456,6 +472,7 @@ func (j *jobService) CommitJobResult(ctx context.Context, jobID, agentID, result
 		}
 		return fmt.Errorf("failed to update job %s with result: %w", jobID, err)
 	}
+	j.revokeCloneToken(ctx, jobID)
 
 	if job.Action == models.JobActionApply {
 		if err := j.releaseApplyLock(ctx, job, jobID); err != nil {
@@ -466,6 +483,57 @@ func (j *jobService) CommitJobResult(ctx context.Context, jobID, agentID, result
 	comment := feedback.JobResultComment(job, job.Status, output, errMsg)
 	j.publishResultComment(ctx, job, comment)
 	return nil
+}
+
+func (j *jobService) IssueCloneToken(ctx context.Context, jobID, agentID string) (scm.CloneToken, error) {
+	job, err := j.jobRepository.Get(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, repository.ErrJobNotFound) {
+			return scm.CloneToken{}, fmt.Errorf("%w: job %s", ErrJobNotFound, jobID)
+		}
+		return scm.CloneToken{}, fmt.Errorf("failed to fetch job %s: %w", jobID, err)
+	}
+	if err := validateJobAgent(job, agentID); err != nil {
+		return scm.CloneToken{}, err
+	}
+	if job.Status != models.JobStatusClaimed && job.Status != models.JobStatusRunning {
+		return scm.CloneToken{}, fmt.Errorf("%w: job %s is %s, expected claimed or running", ErrJobInvalidStatus, jobID, job.Status)
+	}
+
+	token, err := j.scmProvider.CloneToken(ctx, job.Repo)
+	if err != nil {
+		return scm.CloneToken{}, fmt.Errorf("failed to issue clone token for job %s in repository %s: %w", jobID, job.Repo, err)
+	}
+
+	// A job asking twice (a retried clone) gets a fresh token and the earlier
+	// one stops working.
+	j.revokeCloneToken(ctx, jobID)
+	j.cloneTokensMu.Lock()
+	j.cloneTokens[jobID] = token.Token
+	j.cloneTokensMu.Unlock()
+
+	j.logger.Debug("Issued clone token", "job_id", jobID, "agent_id", agentID, "repo", job.Repo)
+	return token, nil
+}
+
+// revokeCloneToken invalidates the token issued to a job, if any. Failures
+// are logged: the token expires on its own and the job's outcome does not
+// depend on it. The call outlives a cancelled request so a token is not
+// left valid because the agent went away.
+func (j *jobService) revokeCloneToken(ctx context.Context, jobID string) {
+	j.cloneTokensMu.Lock()
+	token, ok := j.cloneTokens[jobID]
+	delete(j.cloneTokens, jobID)
+	j.cloneTokensMu.Unlock()
+	if !ok {
+		return
+	}
+
+	if err := j.scmProvider.RevokeCloneToken(context.WithoutCancel(ctx), token); err != nil {
+		j.logger.Warn("Failed to revoke clone token", "job_id", jobID, "error", err)
+		return
+	}
+	j.logger.Debug("Revoked clone token", "job_id", jobID)
 }
 
 func (j *jobService) CleanupExpiredJobs(ctx context.Context) error {

@@ -3,6 +3,7 @@ package webserver_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,9 @@ type stubJobs struct {
 	committed   []commitCall
 	periodicErr error
 	periodics   []periodicCall
+	cloneToken  scm.CloneToken
+	cloneErr    error
+	cloneCalls  []string
 }
 
 type commitCall struct {
@@ -89,6 +93,10 @@ func (s *stubJobs) CommitJobResult(_ context.Context, jobID, agentID, result, ou
 func (s *stubJobs) HandlePeriodicResult(_ context.Context, jobID, agentID, output string) error {
 	s.periodics = append(s.periodics, periodicCall{jobID: jobID, output: output})
 	return s.periodicErr
+}
+func (s *stubJobs) IssueCloneToken(_ context.Context, jobID, agentID string) (scm.CloneToken, error) {
+	s.cloneCalls = append(s.cloneCalls, jobID+"/"+agentID)
+	return s.cloneToken, s.cloneErr
 }
 
 type stubUnlock struct {
@@ -581,6 +589,7 @@ func (s *HandlerSuite) TestAgentTokenRejectsMismatchedBodyAgentID() {
 		"/agent/jobs/job-1/ack",
 		"/agent/jobs/job-1/result",
 		"/agent/jobs/job-1/periodic_result",
+		"/agent/jobs/job-1/clone_token",
 	} {
 		rec := s.tokenPOST(h, "prod-token", path, `{"agent_id":"agent-data"}`)
 		require.Equal(s.T(), http.StatusForbidden, rec.Code, path)
@@ -591,6 +600,7 @@ func (s *HandlerSuite) TestAgentTokenRejectsMismatchedBodyAgentID() {
 	require.Empty(s.T(), s.jobs.acked)
 	require.Empty(s.T(), s.jobs.committed)
 	require.Empty(s.T(), s.jobs.periodics)
+	require.Empty(s.T(), s.jobs.cloneCalls)
 }
 
 func (s *HandlerSuite) TestAgentTokenRejectsUnknownAndSharedTokens() {
@@ -608,9 +618,57 @@ func (s *HandlerSuite) TestAgentTokenReachesEveryAgentRoute() {
 	require.Equal(s.T(), http.StatusNoContent, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/ack", `{}`).Code)
 	require.Equal(s.T(), http.StatusNoContent, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/result", `{"result":"success"}`).Code)
 	require.Equal(s.T(), http.StatusNoContent, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/periodic_result", `{"output":"x"}`).Code)
+	require.Equal(s.T(), http.StatusOK, s.tokenPOST(h, "prod-token", "/agent/jobs/job-1/clone_token", `{}`).Code)
 	require.Equal(s.T(), []string{"job-1"}, s.jobs.acked)
 	require.Len(s.T(), s.jobs.committed, 1)
 	require.Len(s.T(), s.jobs.periodics, 1)
+	require.Equal(s.T(), []string{"job-1/agent-prod"}, s.jobs.cloneCalls)
+}
+
+func (s *HandlerSuite) TestAgentCloneTokenReturnsToken() {
+	s.jobs.cloneToken = scm.CloneToken{Token: "ghs_abc", ExpiresAt: time.Date(2026, 10, 13, 15, 0, 0, 0, time.UTC)}
+
+	rec := s.agentPOST("/agent/jobs/job-1/clone_token", `{"agent_id":"agent-dev"}`)
+	require.Equal(s.T(), http.StatusOK, rec.Code)
+	require.JSONEq(s.T(), `{"token":"ghs_abc","expires_at":"2026-10-13T15:00:00Z"}`, rec.Body.String())
+	require.Equal(s.T(), []string{"job-1/agent-dev"}, s.jobs.cloneCalls)
+}
+
+func (s *HandlerSuite) TestAgentCloneTokenInvalidJSON() {
+	rec := s.agentPOST("/agent/jobs/job-1/clone_token", `{`)
+	require.Equal(s.T(), http.StatusInternalServerError, rec.Code)
+	require.Empty(s.T(), s.jobs.cloneCalls)
+}
+
+func (s *HandlerSuite) TestAgentCloneTokenRequiresBearer() {
+	req := httptest.NewRequest(http.MethodPost, "/agent/jobs/job-1/clone_token", strings.NewReader(`{"agent_id":"agent-dev"}`))
+	rec := httptest.NewRecorder()
+	s.handler.ServeHTTP(rec, req)
+	require.Equal(s.T(), http.StatusUnauthorized, rec.Code)
+	require.Empty(s.T(), s.jobs.cloneCalls)
+}
+
+func (s *HandlerSuite) TestAgentCloneTokenServiceErrors() {
+	cases := map[string]struct {
+		err  error
+		code int
+		body string
+	}{
+		"not found":      {services.ErrJobNotFound, http.StatusNotFound, "Job not found"},
+		"wrong agent":    {services.ErrJobWrongAgent, http.StatusForbidden, "Job belongs to another agent"},
+		"invalid status": {services.ErrJobInvalidStatus, http.StatusConflict, "Job is not claimed or running"},
+		"unavailable":    {scm.ErrCloneTokenUnavailable, http.StatusNotImplemented, "orchestrator is not authenticated as a GitHub App; clone tokens are unavailable"},
+		"other":          {errors.New("github down"), http.StatusInternalServerError, "Failed to issue clone token"},
+	}
+	for name, tc := range cases {
+		s.SetupTest()
+		s.jobs.cloneErr = fmt.Errorf("wrapped: %w", tc.err)
+
+		rec := s.agentPOST("/agent/jobs/job-1/clone_token", `{"agent_id":"agent-dev"}`)
+		require.Equal(s.T(), tc.code, rec.Code, name)
+		require.Equal(s.T(), tc.body, rec.Body.String(), name)
+		require.NotContains(s.T(), rec.Body.String(), "github down", name)
+	}
 }
 
 func (s *HandlerSuite) TestWebhookRouteIgnoresAgentTokens() {

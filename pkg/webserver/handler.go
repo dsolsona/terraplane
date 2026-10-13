@@ -52,6 +52,7 @@ func NewHandler(
 	h.mux.HandleFunc("GET /health", h.healthCheck)
 	h.mux.HandleFunc("POST /scm/webhook", h.scmWebhookHandler)
 	h.mux.Handle("POST /agent/jobs/claim", h.requireBearer(http.HandlerFunc(h.agentJobClaimHandler)))
+	h.mux.Handle("POST /agent/jobs/{id}/clone_token", h.requireBearer(http.HandlerFunc(h.agentJobCloneTokenHandler)))
 	h.mux.Handle("POST /agent/jobs/{id}/heartbeat", h.requireBearer(http.HandlerFunc(h.agentHeartbeatHandler)))
 	h.mux.Handle("POST /agent/jobs/{id}/ack", h.requireBearer(http.HandlerFunc(h.agentJobAckHandler)))
 	h.mux.Handle("POST /agent/jobs/{id}/result", h.requireBearer(http.HandlerFunc(h.agentJobResultHandler)))
@@ -306,6 +307,47 @@ func (h *handler) agentPeriodicResultHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeNoContent(w)
+}
+
+// agentJobCloneTokenHandler hands the job's agent a token to clone the
+// repository with. The token is returned once and never logged.
+func (h *handler) agentJobCloneTokenHandler(w http.ResponseWriter, r *http.Request) {
+	var payload agentCloneTokenPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.logger.Error("Failed to unmarshal agent clone token request body", "error", err)
+		writeResponse(w, http.StatusInternalServerError, "Failed to unmarshal agent clone token request body")
+		return
+	}
+	agentID, ok := h.resolveAgentID(w, r, payload.AgentID)
+	if !ok {
+		return
+	}
+
+	jobID := r.PathValue("id")
+	token, err := h.jobService.IssueCloneToken(r.Context(), jobID, agentID)
+	switch {
+	case err == nil:
+	case errors.Is(err, services.ErrJobNotFound):
+		writeResponse(w, http.StatusNotFound, "Job not found")
+		return
+	case errors.Is(err, services.ErrJobWrongAgent):
+		h.logger.Warn("Refused clone token for a job owned by another agent", "job_id", jobID, "agent_id", agentID)
+		writeResponse(w, http.StatusForbidden, "Job belongs to another agent")
+		return
+	case errors.Is(err, services.ErrJobInvalidStatus):
+		writeResponse(w, http.StatusConflict, "Job is not claimed or running")
+		return
+	case errors.Is(err, scm.ErrCloneTokenUnavailable):
+		h.logger.Error("Failed to issue clone token", "job_id", jobID, "agent_id", agentID, "error", err)
+		writeResponse(w, http.StatusNotImplemented, "orchestrator is not authenticated as a GitHub App; clone tokens are unavailable")
+		return
+	default:
+		h.logger.Error("Failed to issue clone token", "job_id", jobID, "agent_id", agentID, "error", err)
+		writeResponse(w, http.StatusInternalServerError, "Failed to issue clone token")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agentCloneTokenResponse{Token: token.Token, ExpiresAt: token.ExpiresAt})
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

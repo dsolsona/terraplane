@@ -12,7 +12,12 @@
 {{- $_ := set $seenAgents $agent.name true }}
 {{- $defaults := $.Values.agentDefaults }}
 {{- $persistence := mustMergeOverwrite (dict) $defaults.persistence ($agent.persistence | default dict) }}
+{{- $scmAuth := $agent.scmAuth | default $defaults.scmAuth | default "ssh" }}
+{{- if not (has $scmAuth (list "ssh" "app")) }}
+{{- fail (printf "agent %q: scmAuth must be \"ssh\" or \"app\", got %q" $agent.name $scmAuth) }}
+{{- end }}
 {{- $sshKey := mustMergeOverwrite (dict) $defaults.sshKey ($agent.sshKey | default dict) }}
+{{- $mountSSHKey := and (eq $scmAuth "ssh") $sshKey.secretName }}
 {{- $env := mustMergeOverwrite (dict) $defaults.env ($agent.env | default dict) }}
 {{- $envFrom := concat ($defaults.envFrom | default list) ($agent.envFrom | default list) }}
 {{- $extraVolumes := concat ($defaults.extraVolumes | default list) ($agent.extraVolumes | default list) }}
@@ -67,7 +72,9 @@ spec:
               value: {{ $workDir | quote }}
             - name: AGENT_TERRAFORM_BIN_DIR
               value: {{ printf "%s/terraform" $workDir | quote }}
-            {{- if $sshKey.secretName }}
+            - name: AGENT_SCM_AUTH
+              value: {{ $scmAuth | quote }}
+            {{- if $mountSSHKey }}
             - name: AGENT_SCM_SSH_KEY_PATH
               value: {{ $sshKey.mountPath | quote }}
             {{- end }}
@@ -82,7 +89,7 @@ spec:
           volumeMounts:
             - name: work
               mountPath: {{ $workDir }}
-            {{- if $sshKey.secretName }}
+            {{- if $mountSSHKey }}
             - name: ssh-key
               mountPath: {{ dir $sshKey.mountPath }}
               readOnly: true
@@ -102,7 +109,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        {{- if $sshKey.secretName }}
+        {{- if $mountSSHKey }}
         - name: ssh-key
           secret:
             secretName: {{ $sshKey.secretName }}

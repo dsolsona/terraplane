@@ -85,8 +85,10 @@ agentDefaults:
   workDir: /var/terraplane/work
   # -- Default pod resources for agents
   resources: {}
+  # -- How agents authenticate to clone: `ssh` with the deploy key in sshKey, or `app` with per-job tokens minted by the orchestrator (orchestrator must be a GitHub App; no sshKey needed)
+  scmAuth: ssh
   sshKey:
-    # -- Existing Secret name containing the deploy key (required for private repos)
+    # -- Existing Secret name containing the deploy key (required for private repos when scmAuth is `ssh`)
     secretName: ""
     # -- Key within the Secret
     secretKey: ssh-private-key
@@ -111,6 +113,7 @@ agentDefaults:
 #   serviceAccountName: terraplane-agent
 #   extraVolumes: []
 #   extraVolumeMounts: []
+#   scmAuth: ssh
 #   sshKey:
 #     secretName: agent-dev-ssh
 #   persistence:

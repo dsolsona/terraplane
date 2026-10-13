@@ -70,6 +70,21 @@ func (mr *MockClientMockRecorder) ClaimJob(ctx, agentID any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimJob", reflect.TypeOf((*MockClient)(nil).ClaimJob), ctx, agentID)
 }
 
+// CloneToken mocks base method.
+func (m *MockClient) CloneToken(ctx context.Context, jobID, agentID string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CloneToken", ctx, jobID, agentID)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CloneToken indicates an expected call of CloneToken.
+func (mr *MockClientMockRecorder) CloneToken(ctx, jobID, agentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloneToken", reflect.TypeOf((*MockClient)(nil).CloneToken), ctx, jobID, agentID)
+}
+
 // Heartbeat mocks base method.
 func (m *MockClient) Heartbeat(ctx context.Context, jobID, agentID string) error {
 	m.ctrl.T.Helper()

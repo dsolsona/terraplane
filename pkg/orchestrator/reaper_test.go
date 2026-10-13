@@ -25,7 +25,10 @@ func (s *reaperJobs) CreatePendingJobs(context.Context, *scm.Webhook) error { re
 func (s *reaperJobs) ClaimPendingJob(context.Context, string) (*command.Command, error) {
 	return nil, nil
 }
-func (s *reaperJobs) ReleaseClaim(context.Context, string) error           { return nil }
+func (s *reaperJobs) ReleaseClaim(context.Context, string) error { return nil }
+func (s *reaperJobs) IssueCloneToken(context.Context, string, string) (scm.CloneToken, error) {
+	return scm.CloneToken{}, nil
+}
 func (s *reaperJobs) FailClaimedJob(context.Context, string, string) error { return nil }
 func (s *reaperJobs) RefreshAgentClaims(context.Context, string) error     { return nil }
 func (s *reaperJobs) AckJob(context.Context, string, string) error         { return nil }

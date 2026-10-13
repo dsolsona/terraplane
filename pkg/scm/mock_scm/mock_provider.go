@@ -57,6 +57,21 @@ func (mr *MockProviderMockRecorder) ChecksGreen(ctx, repo, sha any) *gomock.Call
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChecksGreen", reflect.TypeOf((*MockProvider)(nil).ChecksGreen), ctx, repo, sha)
 }
 
+// CloneToken mocks base method.
+func (m *MockProvider) CloneToken(ctx context.Context, repo string) (scm.CloneToken, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CloneToken", ctx, repo)
+	ret0, _ := ret[0].(scm.CloneToken)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CloneToken indicates an expected call of CloneToken.
+func (mr *MockProviderMockRecorder) CloneToken(ctx, repo any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloneToken", reflect.TypeOf((*MockProvider)(nil).CloneToken), ctx, repo)
+}
+
 // CommitsBehind mocks base method.
 func (m *MockProvider) CommitsBehind(ctx context.Context, repo, base, head string) (int, error) {
 	m.ctrl.T.Helper()
@@ -144,6 +159,20 @@ func (m *MockProvider) PullRequestApproved(ctx context.Context, repo string, prN
 func (mr *MockProviderMockRecorder) PullRequestApproved(ctx, repo, prNumber any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PullRequestApproved", reflect.TypeOf((*MockProvider)(nil).PullRequestApproved), ctx, repo, prNumber)
+}
+
+// RevokeCloneToken mocks base method.
+func (m *MockProvider) RevokeCloneToken(ctx context.Context, token string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RevokeCloneToken", ctx, token)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RevokeCloneToken indicates an expected call of RevokeCloneToken.
+func (mr *MockProviderMockRecorder) RevokeCloneToken(ctx, token any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeCloneToken", reflect.TypeOf((*MockProvider)(nil).RevokeCloneToken), ctx, token)
 }
 
 // TeamMember mocks base method.

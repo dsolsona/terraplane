@@ -86,6 +86,14 @@ func (p *provider) CommitsBehind(ctx context.Context, repo string, base string, 
 	return p.client.CommitsBehind(ctx, repo, base, head)
 }
 
+func (p *provider) CloneToken(ctx context.Context, repo string) (scm.CloneToken, error) {
+	return p.client.CloneToken(ctx, repo)
+}
+
+func (p *provider) RevokeCloneToken(ctx context.Context, token string) error {
+	return p.client.RevokeCloneToken(ctx, token)
+}
+
 func (p *provider) parseIssueCommentWebhook(r *http.Request) ([]scm.Webhook, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
