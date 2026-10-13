@@ -163,9 +163,11 @@ always fetched (`GET /repos/{slug}/pulls/{n}`) and must be open. Then, per confi
 - `approved`: fetch `GET /repos/{slug}/pulls/{n}/reviews`, keep the latest review per reviewer
   (`COMMENTED` does not change it, `DISMISSED` clears it), require at least one `APPROVED` and no
   `CHANGES_REQUESTED`.
-- `mergeable`: the pull request's `mergeable_state` must be `clean`, `unstable`, or `has_hooks`,
-  as in Atlantis. `dirty`, `draft`, `blocked`, and `behind` fail with a reason naming the cause;
-  `unknown` (GitHub still computing after a push) fails with a "try again shortly" reason.
+- `mergeable`: the pull request must not be a draft (its `draft` field; GitHub reports a draft
+  as `clean` when the base branch is unprotected) and its `mergeable_state` must be `clean`,
+  `unstable`, or `has_hooks`, as in Atlantis. `dirty`, `draft`, `blocked`, and `behind` fail with
+  a reason naming the cause; `unknown` (GitHub still computing after a push) fails with a "try
+  again shortly" reason.
 - `undiverged`: `GET /repos/{slug}/compare/{base}...{head}` must report `behind_by` of zero.
 - `checks_green`: fetch `GET /repos/{slug}/commits/{sha}/status` and
   `GET /repos/{slug}/commits/{sha}/check-runs` for the PR head. Require the combined status to be

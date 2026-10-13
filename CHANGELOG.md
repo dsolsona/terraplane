@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Helm: `orchestrator.config` renders the orchestrator config to a ConfigMap, mounts it, and sets `ORCHESTRATOR_CONFIG_PATH`; new `examples/multi-team`. Reference in `docs/multi-team.md`.
 
+### Fixed
+
+- The `mergeable` apply gate blocks draft pull requests using the pull request's `draft` field. GitHub reports a `mergeable_state` of `clean` for a draft when the base branch has no protection rules, so the gate let drafts through.
+
 ### Changed
 
 - After verifying the webhook signature, the orchestrator re-reads each command comment from the GitHub API and acts on the author, body, and pull request as GitHub reports them rather than as the webhook body claims. Deleted comments are ignored. Comments whose first word is not `terraplane` no longer cause any API calls.

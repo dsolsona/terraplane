@@ -257,8 +257,12 @@ func (j *jobService) applyGateFailures(ctx context.Context, webhook *scm.Webhook
 
 // mergeableReason mirrors Atlantis: clean, unstable, and has_hooks count as
 // mergeable. GitHub reports unknown for a few seconds after a push, which
-// fails closed with a hint to retry.
+// fails closed with a hint to retry. A draft is checked from its own field:
+// GitHub reports clean for a draft without branch protection.
 func mergeableReason(pr scm.PullRequest, prNumber int) string {
+	if pr.Draft {
+		return fmt.Sprintf("apply requires pull request #%d not to be a draft", prNumber)
+	}
 	switch pr.MergeableState {
 	case "clean", "unstable", "has_hooks":
 		return ""

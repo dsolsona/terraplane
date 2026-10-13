@@ -1112,6 +1112,18 @@ func (s *JobServiceSuite) TestApplyGateMergeableStates() {
 	}
 }
 
+func (s *JobServiceSuite) TestApplyGateMergeableBlocksDraftReportedClean() {
+	wh := webhook("terraplane apply -s a")
+	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
+	pr := openPR("clean")
+	pr.Draft = true
+	s.expectPR(pr)
+	s.expectDenied("apply requires pull request #42 not to be a draft")
+
+	err := s.gatedService("      mergeable: true\n").CreatePendingJobs(context.Background(), wh)
+	require.NoError(s.T(), err)
+}
+
 func (s *JobServiceSuite) TestApplyGateUndivergedBlocksBranchBehindBase() {
 	wh := webhook("terraplane apply -s a")
 	s.scm.EXPECT().GetFile("terraplane.yaml", wh.CommitSHA, wh.RepositorySlug).Return(twoStackYAML, nil)
