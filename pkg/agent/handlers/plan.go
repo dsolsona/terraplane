@@ -19,7 +19,7 @@ func (h *Handlers) handlePlan(ctx context.Context, cmd *command.PlanCommand) {
 		"plan_flags", cmd.PlanFlags,
 	)
 
-	workspaceDir, err := h.workspaceManager.ProvisionWorkspace(ctx, cmd.Repo, cmd.CommitSHA, cmd.Stacks[0])
+	workspaceDir, err := h.workspaceManager.ProvisionWorkspace(ctx, cmd.JobID, cmd.Repo, cmd.CommitSHA, cmd.Stacks[0])
 	if err != nil {
 		h.logger.Error(
 			"Failed to provision workspace for terraplane plan",

@@ -56,6 +56,21 @@ func (mr *MockClientMockRecorder) ChecksGreen(ctx, repo, sha any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChecksGreen", reflect.TypeOf((*MockClient)(nil).ChecksGreen), ctx, repo, sha)
 }
 
+// CloneToken mocks base method.
+func (m *MockClient) CloneToken(ctx context.Context, repo string) (scm.CloneToken, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CloneToken", ctx, repo)
+	ret0, _ := ret[0].(scm.CloneToken)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CloneToken indicates an expected call of CloneToken.
+func (mr *MockClientMockRecorder) CloneToken(ctx, repo any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloneToken", reflect.TypeOf((*MockClient)(nil).CloneToken), ctx, repo)
+}
+
 // CommitsBehind mocks base method.
 func (m *MockClient) CommitsBehind(ctx context.Context, repo, base, head string) (int, error) {
 	m.ctrl.T.Helper()
@@ -158,6 +173,20 @@ func (m *MockClient) ReactToComment(ctx context.Context, repo string, commentID 
 func (mr *MockClientMockRecorder) ReactToComment(ctx, repo, commentID, reaction any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReactToComment", reflect.TypeOf((*MockClient)(nil).ReactToComment), ctx, repo, commentID, reaction)
+}
+
+// RevokeCloneToken mocks base method.
+func (m *MockClient) RevokeCloneToken(ctx context.Context, token string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RevokeCloneToken", ctx, token)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RevokeCloneToken indicates an expected call of RevokeCloneToken.
+func (mr *MockClientMockRecorder) RevokeCloneToken(ctx, token any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeCloneToken", reflect.TypeOf((*MockClient)(nil).RevokeCloneToken), ctx, token)
 }
 
 // TeamMember mocks base method.

@@ -21,4 +21,9 @@ type Provider interface {
 	GetPullRequest(ctx context.Context, repo string, prNumber int) (PullRequest, error)
 	// CommitsBehind reports how many commits on base are missing from head.
 	CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error)
+	// CloneToken mints a short-lived token that can read one repository's
+	// contents, for an agent to clone it.
+	CloneToken(ctx context.Context, repo string) (CloneToken, error)
+	// RevokeCloneToken invalidates a token from CloneToken before it expires.
+	RevokeCloneToken(ctx context.Context, token string) error
 }

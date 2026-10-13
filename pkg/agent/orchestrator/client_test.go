@@ -206,3 +206,76 @@ func TestSubmitResultServerError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "submit result failed")
 }
+
+// --- CloneToken ---
+
+func TestCloneTokenSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "POST", r.Method)
+		require.Equal(t, "/agent/jobs/job-1/clone_token", r.URL.Path)
+		require.Equal(t, "Bearer secret", r.Header.Get("Authorization"))
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "agent-dev", body["agent_id"])
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "ghs_abc", "expires_at": "2026-01-01T00:00:00Z"})
+	}))
+	defer srv.Close()
+
+	token, err := newTestClient(t, srv).CloneToken(context.Background(), "job-1", "agent-dev")
+	require.NoError(t, err)
+	require.Equal(t, "ghs_abc", token)
+}
+
+func TestCloneTokenEmptyToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": ""})
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).CloneToken(context.Background(), "job-1", "agent-dev")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "empty clone token")
+}
+
+func TestCloneTokenInvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).CloneToken(context.Background(), "job-1", "agent-dev")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "decode clone token response")
+}
+
+func TestCloneTokenNotImplemented(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).CloneToken(context.Background(), "job-1", "agent-dev")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "GitHub App")
+	require.Contains(t, err.Error(), "AGENT_SCM_AUTH=ssh")
+}
+
+func TestCloneTokenServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).CloneToken(context.Background(), "job-1", "agent-dev")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "clone token request failed: 403")
+}
+
+func TestCloneTokenConnectionError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+
+	_, err := newTestClient(t, srv).CloneToken(context.Background(), "job-1", "agent-dev")
+	require.Error(t, err)
+}

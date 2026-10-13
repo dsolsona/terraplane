@@ -33,6 +33,8 @@ type Client interface {
 	ChecksGreen(ctx context.Context, repo string, sha string) (bool, error)
 	GetPullRequest(ctx context.Context, repo string, prNumber int) (scm.PullRequest, error)
 	CommitsBehind(ctx context.Context, repo string, base string, head string) (int, error)
+	CloneToken(ctx context.Context, repo string) (scm.CloneToken, error)
+	RevokeCloneToken(ctx context.Context, token string) error
 }
 
 type client struct {
@@ -413,6 +415,19 @@ func appendRefQuery(u, ref string) (string, error) {
 	q.Set("ref", ref)
 	parsed.RawQuery = q.Encode()
 	return parsed.String(), nil
+}
+
+// CloneToken mints a token that reads only repo, for one agent clone.
+func (c *client) CloneToken(ctx context.Context, repo string) (scm.CloneToken, error) {
+	token, err := c.tokens.CloneToken(ctx, repo)
+	if err != nil {
+		return scm.CloneToken{}, fmt.Errorf("failed to mint clone token for repository %s: %w", repo, err)
+	}
+	return scm.CloneToken{Token: token.value, ExpiresAt: token.expires}, nil
+}
+
+func (c *client) RevokeCloneToken(ctx context.Context, token string) error {
+	return c.revokeInstallationToken(ctx, token)
 }
 
 func NewClient(config *config.Config) (Client, error) {

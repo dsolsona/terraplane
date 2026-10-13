@@ -32,6 +32,7 @@ type Config struct {
 	AgentHeartbeatInterval                time.Duration `mapstructure:"AGENT_HEARTBEAT_INTERVAL"`
 	AgentID                               string        `mapstructure:"AGENT_ID"`
 	AgentSCMSSHKeyPath                    string        `mapstructure:"AGENT_SCM_SSH_KEY_PATH"`
+	AgentSCMAuth                          string        `mapstructure:"AGENT_SCM_AUTH"`
 	AgentWorkDir                          string        `mapstructure:"AGENT_WORK_DIR"`
 	AgentTerraformBinDir                  string        `mapstructure:"AGENT_TERRAFORM_BIN_DIR"`
 	AgentDefaultTerraformVersion          string        `mapstructure:"AGENT_DEFAULT_TERRAFORM_VERSION"`
@@ -95,6 +96,7 @@ func init() {
 	viper.SetDefault("AGENT_HEARTBEAT_INTERVAL", "30s")
 	viper.SetDefault("AGENT_ID", "")
 	viper.SetDefault("AGENT_SCM_SSH_KEY_PATH", "")
+	viper.SetDefault("AGENT_SCM_AUTH", "ssh")
 	viper.SetDefault("AGENT_WORK_DIR", "")
 	viper.SetDefault("AGENT_TERRAFORM_BIN_DIR", "")
 	viper.SetDefault("AGENT_DEFAULT_TERRAFORM_VERSION", "1.15.6")

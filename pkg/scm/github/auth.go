@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -21,12 +22,16 @@ import (
 	"time"
 
 	"github.com/xyzjace/terraplane/config"
+	"github.com/xyzjace/terraplane/pkg/scm"
 )
 
 // tokenSource supplies the bearer token for GitHub API requests about the
 // repositories of one account (an organisation or a user).
 type tokenSource interface {
 	Token(ctx context.Context, owner string) (string, error)
+	// CloneToken mints a token limited to reading the contents of one
+	// repository. Only a GitHub App can narrow a token this way.
+	CloneToken(ctx context.Context, repo string) (installationToken, error)
 }
 
 // staticToken is a personal access token: one token for every account.
@@ -37,6 +42,10 @@ func (t staticToken) Token(context.Context, string) (string, error) {
 		return "", fmt.Errorf("GitHub credentials are not configured. Please set ORCHESTRATOR_GITHUB_ACCESS_TOKEN or the ORCHESTRATOR_GITHUB_APP_* settings in the environment")
 	}
 	return string(t), nil
+}
+
+func (t staticToken) CloneToken(context.Context, string) (installationToken, error) {
+	return installationToken{}, fmt.Errorf("%w: a personal access token cannot be narrowed to one repository; authenticate as a GitHub App", scm.ErrCloneTokenUnavailable)
 }
 
 const (
@@ -92,12 +101,38 @@ func (a *appTokenSource) Token(ctx context.Context, owner string) (string, error
 		return token.value, nil
 	}
 
-	token, err := a.createInstallationToken(ctx, installationID)
+	token, err := a.createInstallationToken(ctx, installationID, nil)
 	if err != nil {
 		return "", err
 	}
 	a.tokens[installationID] = token
 	return token.value, nil
+}
+
+// CloneToken asks GitHub for a token that can only read repo. Every call
+// mints a fresh token: they are handed to agents one job at a time and
+// revoked when the job ends, so caching would only widen their exposure.
+func (a *appTokenSource) CloneToken(ctx context.Context, repo string) (installationToken, error) {
+	owner, name, found := strings.Cut(repo, "/")
+	if !found || owner == "" || name == "" {
+		return installationToken{}, fmt.Errorf("repository %q is not an owner/name slug", repo)
+	}
+
+	a.mu.Lock()
+	installationID, err := a.installation(ctx, owner)
+	a.mu.Unlock()
+	if err != nil {
+		return installationToken{}, err
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"repositories": []string{name},
+		"permissions":  map[string]string{"contents": "read", "metadata": "read"},
+	})
+	if err != nil {
+		return installationToken{}, fmt.Errorf("failed to encode clone token request for repository %s: %w", repo, err)
+	}
+	return a.createInstallationToken(ctx, installationID, body)
 }
 
 func (a *appTokenSource) installation(ctx context.Context, owner string) (string, error) {
@@ -135,7 +170,7 @@ func (a *appTokenSource) lookupInstallation(ctx context.Context, owner string) (
 }
 
 func (a *appTokenSource) getInstallation(ctx context.Context, u string) (string, bool, error) {
-	req, err := a.newAppRequest(ctx, http.MethodGet, u)
+	req, err := a.newAppRequest(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", false, err
 	}
@@ -164,9 +199,12 @@ func (a *appTokenSource) getInstallation(ctx context.Context, u string) (string,
 	}
 }
 
-func (a *appTokenSource) createInstallationToken(ctx context.Context, installationID string) (installationToken, error) {
+// createInstallationToken exchanges the app JWT for an installation token.
+// A nil body yields a token with the installation's full access; a JSON
+// body with repositories and permissions narrows it.
+func (a *appTokenSource) createInstallationToken(ctx context.Context, installationID string, body []byte) (installationToken, error) {
 	u := fmt.Sprintf("%s/app/installations/%s/access_tokens", a.apiURL, url.PathEscape(installationID))
-	req, err := a.newAppRequest(ctx, http.MethodPost, u)
+	req, err := a.newAppRequest(ctx, http.MethodPost, u, body)
 	if err != nil {
 		return installationToken{}, err
 	}
@@ -196,20 +234,57 @@ func (a *appTokenSource) createInstallationToken(ctx context.Context, installati
 }
 
 // newAppRequest builds a request authenticated as the app itself, with a
-// freshly signed JWT.
-func (a *appTokenSource) newAppRequest(ctx context.Context, method, u string) (*http.Request, error) {
+// freshly signed JWT. body, when not nil, is sent as JSON.
+func (a *appTokenSource) newAppRequest(ctx context.Context, method, u string, body []byte) (*http.Request, error) {
 	jwt, err := a.jwt()
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GitHub API request to %s: %w", u, err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	return req, nil
+}
+
+// revokeInstallationToken invalidates an installation token. The token
+// authenticates its own revocation, so no app credentials are involved. A
+// 401 means GitHub no longer recognises the token, which is the outcome
+// wanted, so it counts as success.
+func (c *client) revokeInstallationToken(ctx context.Context, token string) error {
+	u := c.apiURL + "/installation/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub API request to revoke an installation token: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute GitHub API request to revoke an installation token: %w", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	switch res.StatusCode {
+	case http.StatusNoContent, http.StatusUnauthorized:
+		_, _ = io.Copy(io.Discard, res.Body)
+		return nil
+	default:
+		body, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("GitHub API request to revoke an installation token returned unexpected status %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
 }
 
 // jwt signs the token GitHub expects from an app: RS256 over a fixed header

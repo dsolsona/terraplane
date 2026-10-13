@@ -171,11 +171,12 @@ Image tags follow release semver (`ghcr.io/terraplane-org/terraplane:<version>`)
 | agentDefaults.extraVolumeMounts | list | `[]` | Extra volumeMounts for all agents (concatenated with `agents[].extraVolumeMounts`; after work/ssh) |
 | agentDefaults.workDir | string | `"/var/terraplane/work"` | Agent working directory (workspace + terraform bins) |
 | agentDefaults.resources | object | `{}` | Default pod resources for agents |
-| agentDefaults.sshKey.secretName | string | `""` | Existing Secret name containing the deploy key (required for private repos) |
+| agentDefaults.scmAuth | string | `"ssh"` | How agents clone: `ssh` with the deploy key in `sshKey`, or `app` with per-job tokens minted by the orchestrator (orchestrator must authenticate as a GitHub App; no `sshKey` needed). Per-agent `scmAuth` overrides. |
+| agentDefaults.sshKey.secretName | string | `""` | Existing Secret name containing the deploy key (required for private repos when `scmAuth` is `ssh`) |
 | agentDefaults.sshKey.secretKey | string | `"ssh-private-key"` | Key within the Secret |
 | agentDefaults.sshKey.mountPath | string | `"/etc/terraplane/git_ssh_key"` | Absolute path where the key is mounted in the container |
 | agentDefaults.persistence.enabled | bool | `true` | Create a PVC per agent for plan/apply workspace reuse. false uses emptyDir |
 | agentDefaults.persistence.size | string | `"20Gi"` | PVC size |
 | agentDefaults.persistence.storageClassName | string | `""` | StorageClass name (empty = cluster default) |
 | agentDefaults.persistence.accessMode | string | `"ReadWriteOnce"` | PVC access mode |
-| agents | list | `[]` | Agent definitions. Each entry becomes a Deployment (replicas=1) with AGENT_ID = name. Optional per-agent: `serviceAccountName`, `extraVolumes`, `extraVolumeMounts`, `env`, `envFrom`, `sshKey`, `persistence`, `resources`, `workDir`. |
+| agents | list | `[]` | Agent definitions. Each entry becomes a Deployment (replicas=1) with AGENT_ID = name. Optional per-agent: `serviceAccountName`, `extraVolumes`, `extraVolumeMounts`, `env`, `envFrom`, `scmAuth`, `sshKey`, `persistence`, `resources`, `workDir`. |

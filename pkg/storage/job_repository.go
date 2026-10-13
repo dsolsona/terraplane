@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -109,6 +110,9 @@ func stringFromPayload(payload map[string]interface{}, key string) string {
 func (r *jobRepository) Get(ctx context.Context, jobID string) (*models.Job, error) {
 	var job models.Job
 	err := r.db.pool.WithContext(ctx).First(&job, "id = ?", jobID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("%w: %s", repository.ErrJobNotFound, jobID)
+	}
 	if err != nil {
 		return nil, err
 	}

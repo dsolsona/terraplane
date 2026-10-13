@@ -1,6 +1,10 @@
 package webserver
 
-import "github.com/xyzjace/terraplane/pkg/command"
+import (
+	"time"
+
+	"github.com/xyzjace/terraplane/pkg/command"
+)
 
 type agentJobClaimPayload struct {
 	AgentID string `json:"agent_id"`
@@ -28,4 +32,13 @@ type agentJobResultPayload struct {
 type agentPeriodicResultPayload struct {
 	AgentID string `json:"agent_id"`
 	Output  string `json:"output"`
+}
+
+type agentCloneTokenPayload struct {
+	AgentID string `json:"agent_id"`
+}
+
+type agentCloneTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }

@@ -289,7 +289,7 @@ func TestUpsertPendingJobInvalidPayload(t *testing.T) {
 func TestGetMissingJob(t *testing.T) {
 	repo := testJobRepo(t)
 	_, err := repo.Get(context.Background(), "missing")
-	require.Error(t, err)
+	require.ErrorIs(t, err, repository.ErrJobNotFound)
 }
 
 func TestClaimPendingJobForAgentIgnoresOtherAgents(t *testing.T) {

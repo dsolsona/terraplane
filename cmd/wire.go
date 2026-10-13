@@ -51,9 +51,10 @@ func InitializeAgent() (agent.Manager, error) {
 		observableSet,
 		config.NewConfig,
 		scmfactory.NewRepositoryAccess,
+		agentorchestrator.NewClient,
+		wire.Bind(new(workspace.CloneTokenSource), new(agentorchestrator.Client)),
 		workspace.NewManager,
 		terraform.NewManager,
-		agentorchestrator.NewClient,
 		agent.NewManager,
 	)
 	return nil, nil

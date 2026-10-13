@@ -68,6 +68,9 @@ type fakeGitHubApp struct {
 	tokenStatus   int
 	tokenBody     string
 	expiresAt     time.Time
+	tokenRequests []string // JSON bodies of access_tokens requests, "" when none
+	revokeStatus  int
+	revoked       []string // tokens presented to DELETE /installation/token
 }
 
 func newFakeGitHubApp(t *testing.T, key *rsa.PrivateKey) *fakeGitHubApp {
@@ -79,6 +82,7 @@ func newFakeGitHubApp(t *testing.T, key *rsa.PrivateKey) *fakeGitHubApp {
 		installations: map[string]int64{"orgs/acme": 42, "users/dave": 7},
 		tokenStatus:   http.StatusCreated,
 		expiresAt:     time.Now().Add(time.Hour),
+		revokeStatus:  http.StatusNoContent,
 	}
 }
 
@@ -111,8 +115,17 @@ func (f *fakeGitHubApp) verifyJWT(r *http.Request) {
 
 func (f *fakeGitHubApp) server() *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.verifyJWT(r)
 		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "installation/token" {
+			// Revocation is authenticated by the token itself, not the app JWT.
+			require.Equal(f.t, http.MethodDelete, r.Method)
+			auth := r.Header.Get("Authorization")
+			require.True(f.t, strings.HasPrefix(auth, "token "), "revocation must authenticate with the token")
+			f.revoked = append(f.revoked, strings.TrimPrefix(auth, "token "))
+			w.WriteHeader(f.revokeStatus)
+			return
+		}
+		f.verifyJWT(r)
 		switch {
 		case strings.HasSuffix(path, "/installation"):
 			id, ok := f.installations[strings.TrimSuffix(path, "/installation")]
@@ -124,6 +137,9 @@ func (f *fakeGitHubApp) server() *httptest.Server {
 		case strings.HasPrefix(path, "app/installations/") && strings.HasSuffix(path, "/access_tokens"):
 			require.Equal(f.t, http.MethodPost, r.Method)
 			f.tokenCalls++
+			body, err := io.ReadAll(r.Body)
+			require.NoError(f.t, err)
+			f.tokenRequests = append(f.tokenRequests, string(body))
 			w.WriteHeader(f.tokenStatus)
 			if f.tokenBody != "" {
 				_, _ = io.WriteString(w, f.tokenBody)

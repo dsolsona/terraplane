@@ -18,10 +18,18 @@ type Client interface {
 	Ack(ctx context.Context, jobID string, agentID string) error
 	SubmitResult(ctx context.Context, jobID string, agentID string, success bool, output string, errMsg string) error
 	SubmitPeriodicResult(ctx context.Context, jobID string, agentID string, output string) error
+	// CloneToken asks the orchestrator for a short-lived token that can read
+	// the job's repository. Only available when the orchestrator is a GitHub App.
+	CloneToken(ctx context.Context, jobID string, agentID string) (string, error)
 }
 
 type claimResponse struct {
 	Command command.Command `json:"command"`
+}
+
+type cloneTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
 }
 
 type client struct {
@@ -127,6 +135,30 @@ func (c *client) SubmitPeriodicResult(ctx context.Context, jobID string, agentID
 		return fmt.Errorf("submit periodic result failed: %s", resp.Status)
 	}
 	return nil
+}
+
+func (c *client) CloneToken(ctx context.Context, jobID string, agentID string) (string, error) {
+	resp, err := c.post(ctx, fmt.Sprintf("/agent/jobs/%s/clone_token", jobID), map[string]string{"agent_id": agentID})
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var response cloneTokenResponse
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			return "", fmt.Errorf("failed to decode clone token response: %w", err)
+		}
+		if response.Token == "" {
+			return "", fmt.Errorf("orchestrator returned an empty clone token for job %s", jobID)
+		}
+		return response.Token, nil
+	case http.StatusNotImplemented:
+		return "", fmt.Errorf("orchestrator cannot issue clone tokens (%s); it must authenticate to GitHub as a GitHub App, or set AGENT_SCM_AUTH=ssh on this agent", resp.Status)
+	default:
+		return "", fmt.Errorf("clone token request failed: %s", resp.Status)
+	}
 }
 
 func NewClient(config *config.Config) Client {

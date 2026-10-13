@@ -2,9 +2,11 @@ package workspace
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +17,23 @@ import (
 	"github.com/xyzjace/terraplane/pkg/scm"
 )
 
+const (
+	// CloneAuthSSH clones over SSH with the deploy key at AGENT_SCM_SSH_KEY_PATH.
+	CloneAuthSSH = "ssh"
+	// CloneAuthApp clones over HTTPS with a per-job token issued by the orchestrator.
+	CloneAuthApp = "app"
+)
+
 type Manager interface {
-	ProvisionWorkspace(ctx context.Context, repo string, revision string, stack string) (string, error)
+	ProvisionWorkspace(ctx context.Context, jobID string, repo string, revision string, stack string) (string, error)
 	FetchWorkspace(ctx context.Context, repo string, revision string, stack string) (string, error)
 	RemoveWorkspace(ctx context.Context, path string) error
+}
+
+// CloneTokenSource hands out the token for one job's repository. The agent's
+// orchestrator client satisfies it.
+type CloneTokenSource interface {
+	CloneToken(ctx context.Context, jobID string, agentID string) (string, error)
 }
 
 //go:generate mockgen -source=manager.go -destination=mock_workspace/mock_manager.go -package=mock_workspace
@@ -26,35 +41,52 @@ type Manager interface {
 type manager struct {
 	logger     log.Logger
 	repoAccess scm.RepositoryAccess
+	tokens     CloneTokenSource
+	cloneAuth  string
+	agentID    string
 	sshKeyPath string
 	workDir    string
 	runner     process.Runner
 }
 
-func NewManager(cfg *config.Config, logger log.Logger, repoAccess scm.RepositoryAccess) Manager {
-	return NewManagerWith(cfg, logger, repoAccess, process.OSRunner{})
+func NewManager(cfg *config.Config, logger log.Logger, repoAccess scm.RepositoryAccess, tokens CloneTokenSource) (Manager, error) {
+	return NewManagerWith(cfg, logger, repoAccess, tokens, process.OSRunner{})
 }
 
 // NewManagerWith is like NewManager but allows injecting a Command Runner (useful in tests).
-func NewManagerWith(cfg *config.Config, logger log.Logger, repoAccess scm.RepositoryAccess, runner process.Runner) Manager {
+func NewManagerWith(cfg *config.Config, logger log.Logger, repoAccess scm.RepositoryAccess, tokens CloneTokenSource, runner process.Runner) (Manager, error) {
+	cloneAuth := cfg.AgentSCMAuth
+	if cloneAuth == "" {
+		cloneAuth = CloneAuthSSH
+	}
+	switch cloneAuth {
+	case CloneAuthSSH, CloneAuthApp:
+	default:
+		return nil, fmt.Errorf("AGENT_SCM_AUTH must be %q or %q, got %q", CloneAuthSSH, CloneAuthApp, cfg.AgentSCMAuth)
+	}
 	if runner == nil {
 		runner = process.OSRunner{}
 	}
 	return &manager{
 		logger:     logger,
 		repoAccess: repoAccess,
+		tokens:     tokens,
+		cloneAuth:  cloneAuth,
+		agentID:    cfg.AgentID,
 		sshKeyPath: cfg.AgentSCMSSHKeyPath,
 		workDir:    cfg.AgentWorkDir,
 		runner:     runner,
-	}
+	}, nil
 }
 
-func (m *manager) ProvisionWorkspace(ctx context.Context, repo string, revision string, stack string) (string, error) {
-	if m.sshKeyPath == "" {
-		return "", fmt.Errorf("AGENT_SCM_SSH_KEY_PATH is not configured; SSH is required to clone private repositories")
-	}
-	if _, err := os.Stat(m.sshKeyPath); err != nil {
-		return "", fmt.Errorf("SSH key not found at %q: %w", m.sshKeyPath, err)
+func (m *manager) ProvisionWorkspace(ctx context.Context, jobID string, repo string, revision string, stack string) (string, error) {
+	if m.cloneAuth == CloneAuthSSH {
+		if m.sshKeyPath == "" {
+			return "", fmt.Errorf("AGENT_SCM_SSH_KEY_PATH is not configured; SSH is required to clone private repositories")
+		}
+		if _, err := os.Stat(m.sshKeyPath); err != nil {
+			return "", fmt.Errorf("SSH key not found at %q: %w", m.sshKeyPath, err)
+		}
 	}
 
 	if m.workDir == "" {
@@ -116,7 +148,7 @@ func (m *manager) ProvisionWorkspace(ctx context.Context, repo string, revision 
 		}
 	}()
 
-	ok, err = m.cloneRepo(ctx, repo, revision, repoDirPath)
+	ok, err = m.cloneRepo(ctx, jobID, repo, revision, repoDirPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to clone repository %s at revision %s: %w", repo, revision, err)
 	}
@@ -152,11 +184,41 @@ func (m *manager) FetchWorkspace(ctx context.Context, repo string, revision stri
 	return repoDirPath, nil
 }
 
-func (m *manager) cloneRepo(ctx context.Context, repo string, revision string, repoDirPath string) (bool, error) {
+func (m *manager) cloneRepo(ctx context.Context, jobID string, repo string, revision string, repoDirPath string) (bool, error) {
+	var repoURL string
+	var env []string
+	var err error
+	switch m.cloneAuth {
+	case CloneAuthApp:
+		repoURL, env, err = m.tokenCloneEnv(ctx, jobID, repo, revision)
+	default:
+		repoURL, env, err = m.sshCloneEnv(ctx, repo, repoDirPath)
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if err := m.runGit(ctx, repoDirPath, env, "init"); err != nil {
+		return false, fmt.Errorf("failed to initialize git repository: %w", err)
+	}
+	if err := m.runGit(ctx, repoDirPath, env, "remote", "add", "origin", repoURL); err != nil {
+		return false, fmt.Errorf("failed to add git remote: %w", err)
+	}
+	if err := m.runGit(ctx, repoDirPath, env, "fetch", "--depth", "1", "origin", revision); err != nil {
+		return false, fmt.Errorf("failed to fetch revision %s from %s: %w", revision, repo, err)
+	}
+	if err := m.runGit(ctx, repoDirPath, env, "checkout", revision); err != nil {
+		return false, fmt.Errorf("failed to checkout revision %s: %w", revision, err)
+	}
+
+	return true, nil
+}
+
+func (m *manager) sshCloneEnv(ctx context.Context, repo string, repoDirPath string) (string, []string, error) {
 	host := m.repoAccess.SSHHost()
 	knownHostsPath := filepath.Join(repoDirPath, "known_hosts")
 	if err := m.scanHostKeys(ctx, host, knownHostsPath); err != nil {
-		return false, err
+		return "", nil, err
 	}
 
 	gitSSH := fmt.Sprintf(
@@ -164,22 +226,34 @@ func (m *manager) cloneRepo(ctx context.Context, repo string, revision string, r
 		m.sshKeyPath,
 		knownHostsPath,
 	)
-	repoURL := m.repoAccess.CloneURL(repo)
+	return m.repoAccess.CloneURL(repo), []string{"GIT_SSH_COMMAND=" + gitSSH}, nil
+}
 
-	if err := m.runGit(ctx, repoDirPath, gitSSH, "init"); err != nil {
-		return false, fmt.Errorf("failed to initialize git repository: %w", err)
-	}
-	if err := m.runGit(ctx, repoDirPath, gitSSH, "remote", "add", "origin", repoURL); err != nil {
-		return false, fmt.Errorf("failed to add git remote: %w", err)
-	}
-	if err := m.runGit(ctx, repoDirPath, gitSSH, "fetch", "--depth", "1", "origin", revision); err != nil {
-		return false, fmt.Errorf("failed to fetch revision %s from %s: %w", revision, repo, err)
-	}
-	if err := m.runGit(ctx, repoDirPath, gitSSH, "checkout", revision); err != nil {
-		return false, fmt.Errorf("failed to checkout revision %s: %w", revision, err)
+// tokenCloneEnv fetches the job's token and hands it to git as an
+// Authorization header through environment-based config. That keeps the
+// token off the command line, out of .git/config, and off disk; it lives
+// only in this process and the git processes it spawns.
+func (m *manager) tokenCloneEnv(ctx context.Context, jobID string, repo string, revision string) (string, []string, error) {
+	token, err := m.tokens.CloneToken(ctx, jobID, m.agentID)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to obtain clone token for repository %s: %w", repo, err)
 	}
 
-	return true, nil
+	repoURL := m.repoAccess.HTTPSCloneURL(repo)
+	parsed, err := url.Parse(repoURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to parse clone URL for repository %s: %w", repo, err)
+	}
+
+	m.logger.Info("Cloning with an orchestrator-issued token", "repo", repo, "revision", revision)
+	credentials := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	env := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_COUNT=1",
+		fmt.Sprintf("GIT_CONFIG_KEY_0=http.%s://%s/.extraheader", parsed.Scheme, parsed.Host),
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + credentials,
+	}
+	return repoURL, env, nil
 }
 
 func (m *manager) scanHostKeys(ctx context.Context, host, path string) error {
@@ -202,12 +276,12 @@ func (m *manager) scanHostKeys(ctx context.Context, host, path string) error {
 	return nil
 }
 
-func (m *manager) runGit(ctx context.Context, dir, gitSSH string, args ...string) error {
+func (m *manager) runGit(ctx context.Context, dir string, env []string, args ...string) error {
 	result, err := m.runner.Run(ctx, process.Command{
 		Name: "git",
 		Args: args,
 		Dir:  dir,
-		Env:  []string{"GIT_SSH_COMMAND=" + gitSSH},
+		Env:  env,
 	})
 	if err != nil {
 		return err
