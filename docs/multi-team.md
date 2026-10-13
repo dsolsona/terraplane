@@ -120,8 +120,9 @@ installation for each repository's organisation or user and caches it, so one
 app installed in several organisations works.
 
 An app needs these repository permissions: Contents read, Metadata read, Pull
-requests read, Issues write (comments and reactions), Checks read, Commit
-statuses read; and the organisation permission Members read when `@org/team`
+requests read and write (comments and reactions on a pull request are pull
+request writes, and GitHub answers 403 without it), Issues write, Checks read,
+Commit statuses read; and the organisation permission Members read when `@org/team`
 entries are used. Subscribe it to the `issue_comment` event and point its
 webhook at `/scm/webhook` with `ORCHESTRATOR_GITHUB_WEBHOOK_SECRET`.
 
