@@ -29,15 +29,20 @@ func (s *ClientSuite) newClient(handler http.HandlerFunc) (*client, *httptest.Se
 	srv := httptest.NewServer(handler)
 	s.T().Cleanup(srv.Close)
 	return &client{
-		accessToken: "token",
-		httpClient:  srv.Client(),
-		apiURL:      srv.URL,
+		tokens:     staticToken("token"),
+		httpClient: srv.Client(),
+		apiURL:     srv.URL,
 	}, srv
 }
 
 func (s *ClientSuite) TestNewClient() {
-	c := NewClient(&config.Config{OrchestratorGithubAccessToken: "tok"})
+	c, err := NewClient(&config.Config{OrchestratorGithubAccessToken: "tok"})
+	require.NoError(s.T(), err)
 	require.NotNil(s.T(), c)
+
+	_, err = NewClient(&config.Config{OrchestratorGithubAccessToken: "tok", OrchestratorGithubAppID: "1"})
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "not both")
 }
 
 func (s *ClientSuite) TestGetCommitSHASuccess() {
@@ -185,9 +190,9 @@ func (s *ClientSuite) TestReactToCommentNonCreated() {
 
 func (s *ClientSuite) TestReactToCommentTransportError() {
 	c := &client{
-		accessToken: "token",
-		httpClient:  http.DefaultClient,
-		apiURL:      "http://127.0.0.1:1",
+		tokens:     staticToken("token"),
+		httpClient: http.DefaultClient,
+		apiURL:     "http://127.0.0.1:1",
 	}
 	err := c.ReactToComment(context.Background(), "acme/infra", 42, "+1")
 	require.Error(s.T(), err)
@@ -195,14 +200,14 @@ func (s *ClientSuite) TestReactToCommentTransportError() {
 }
 
 func (s *ClientSuite) TestReactToCommentRequestBuildError() {
-	c := &client{accessToken: "token", httpClient: http.DefaultClient, apiURL: "http://example.com/\x00"}
+	c := &client{tokens: staticToken("token"), httpClient: http.DefaultClient, apiURL: "http://example.com/\x00"}
 	err := c.ReactToComment(context.Background(), "acme/infra", 42, "+1")
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to create GitHub API request")
 }
 
 func (s *ClientSuite) TestReactToCommentMissingAccessToken() {
-	c := &client{accessToken: "", httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
+	c := &client{tokens: staticToken(""), httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
 	err := c.ReactToComment(context.Background(), "acme/infra", 42, "+1")
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
@@ -220,7 +225,7 @@ func (s *ClientSuite) TestWriteCommentNonCreated() {
 }
 
 func (s *ClientSuite) TestMissingAccessToken() {
-	c := &client{accessToken: "", httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
+	c := &client{tokens: staticToken(""), httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
 	_, err := c.GetCommitSHA(context.Background(), "acme/infra", 1)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
@@ -228,9 +233,9 @@ func (s *ClientSuite) TestMissingAccessToken() {
 
 func (s *ClientSuite) TestTransportError() {
 	c := &client{
-		accessToken: "token",
-		httpClient:  http.DefaultClient,
-		apiURL:      "http://127.0.0.1:1", // nothing listening
+		tokens:     staticToken("token"),
+		httpClient: http.DefaultClient,
+		apiURL:     "http://127.0.0.1:1", // nothing listening
 	}
 	_, err := c.GetCommitSHA(context.Background(), "acme/infra", 1)
 	require.Error(s.T(), err)
@@ -245,9 +250,9 @@ func (s *ClientSuite) TestAppendRefQueryInvalidURL() {
 
 func (s *ClientSuite) TestWriteCommentTransportError() {
 	c := &client{
-		accessToken: "token",
-		httpClient:  http.DefaultClient,
-		apiURL:      "http://127.0.0.1:1",
+		tokens:     staticToken("token"),
+		httpClient: http.DefaultClient,
+		apiURL:     "http://127.0.0.1:1",
 	}
 	_, err := c.WriteComment(context.Background(), "acme/infra", 1, "x")
 	require.Error(s.T(), err)
@@ -266,9 +271,9 @@ func (s *ClientSuite) TestGetFileNonOK() {
 
 func (s *ClientSuite) TestGetFileAppendRefQueryError() {
 	c := &client{
-		accessToken: "token",
-		httpClient:  http.DefaultClient,
-		apiURL:      "http://example.com",
+		tokens:     staticToken("token"),
+		httpClient: http.DefaultClient,
+		apiURL:     "http://example.com",
 	}
 	// Path with an invalid percent-encoding makes url.Parse fail inside appendRefQuery.
 	_, err := c.GetFile(context.Background(), "acme/infra", "%zz", "main")
@@ -277,7 +282,7 @@ func (s *ClientSuite) TestGetFileAppendRefQueryError() {
 }
 
 func (s *ClientSuite) TestWriteCommentRequestBuildError() {
-	c := &client{accessToken: "token", httpClient: http.DefaultClient, apiURL: "http://example.com/\x00"}
+	c := &client{tokens: staticToken("token"), httpClient: http.DefaultClient, apiURL: "http://example.com/\x00"}
 	_, err := c.WriteComment(context.Background(), "acme/infra", 1, "x")
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to create GitHub API request")
@@ -285,8 +290,8 @@ func (s *ClientSuite) TestWriteCommentRequestBuildError() {
 
 func (s *ClientSuite) TestGetJSONBodyReadError() {
 	c := &client{
-		accessToken: "token",
-		apiURL:      "http://example.com",
+		tokens: staticToken("token"),
+		apiURL: "http://example.com",
 		httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -301,8 +306,8 @@ func (s *ClientSuite) TestGetJSONBodyReadError() {
 }
 
 func (s *ClientSuite) TestNewRequestInvalidURL() {
-	c := &client{accessToken: "token"}
-	_, err := c.newRequest(context.Background(), http.MethodGet, "http://example.com/\x00", nil)
+	c := &client{tokens: staticToken("token")}
+	_, err := c.newRequest(context.Background(), "acme", http.MethodGet, "http://example.com/\x00", nil)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "failed to create GitHub API request")
 }
@@ -374,7 +379,7 @@ func (s *ClientSuite) TestTeamMemberTransportError() {
 }
 
 func (s *ClientSuite) TestTeamMemberMissingAccessToken() {
-	c := &client{httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
+	c := &client{tokens: staticToken(""), httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
 	_, err := c.TeamMember(context.Background(), "acme", "platform", "alice")
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")
@@ -443,7 +448,7 @@ func (s *ClientSuite) TestGetIssueCommentTransportError() {
 }
 
 func (s *ClientSuite) TestGetIssueCommentMissingAccessToken() {
-	c := &client{httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
+	c := &client{tokens: staticToken(""), httpClient: http.DefaultClient, apiURL: "http://example.invalid"}
 	_, err := c.GetIssueComment(context.Background(), "acme/infra", 99)
 	require.Error(s.T(), err)
 	require.Contains(s.T(), err.Error(), "ORCHESTRATOR_GITHUB_ACCESS_TOKEN")

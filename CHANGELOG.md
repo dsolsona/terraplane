@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub App authentication for the orchestrator. Set `ORCHESTRATOR_GITHUB_APP_ID` and `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY` (PEM) or `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_PATH` instead of `ORCHESTRATOR_GITHUB_ACCESS_TOKEN`; the orchestrator signs an app JWT, looks up the installation for each repository's account (or uses `ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` when set), and exchanges it for short-lived installation tokens that are cached and renewed before expiry. Personal access tokens keep working; configuring both is a startup error.
 - OpenTofu support. Set `tool: tofu` on a stack or environment in `terraplane.yaml` (default `terraform`), or `AGENT_DEFAULT_TOOL=tofu` on an agent for repositories that do not say. Agents download OpenTofu releases from GitHub, verify them against the published `SHA256SUMS`, and keep them under `AGENT_TERRAFORM_BIN_DIR/tofu/<version>`. `AGENT_DEFAULT_TOFU_VERSION` (default `1.11.5`) is the fallback version for `tofu` stacks, alongside the existing `AGENT_DEFAULT_TERRAFORM_VERSION`.
 - `ORCHESTRATOR_CONFIG_PATH` points at an optional orchestrator config file (`agents` and `repos`). When set, each agent is identified by its own bearer token (`agents.<name>.token_env`) instead of `SHARED_AUTH_TOKEN`, and an agent request whose `agent_id` does not match its token is rejected with 403. Without the file nothing changes.
 

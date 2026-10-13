@@ -16,6 +16,10 @@ type Config struct {
 	OrchestratorListenPort                int           `mapstructure:"ORCHESTRATOR_LISTEN_PORT"`
 	OrchestratorGithubWebhookSecret       string        `mapstructure:"ORCHESTRATOR_GITHUB_WEBHOOK_SECRET"`
 	OrchestratorGithubAccessToken         string        `mapstructure:"ORCHESTRATOR_GITHUB_ACCESS_TOKEN"`
+	OrchestratorGithubAppID               string        `mapstructure:"ORCHESTRATOR_GITHUB_APP_ID"`
+	OrchestratorGithubAppInstallationID   string        `mapstructure:"ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID"`
+	OrchestratorGithubAppPrivateKey       string        `mapstructure:"ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY"`
+	OrchestratorGithubAppPrivateKeyPath   string        `mapstructure:"ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_PATH"`
 	OrchestratorDispatcherJobPollInterval time.Duration `mapstructure:"ORCHESTRATOR_DISPATCHER_JOB_POLL_INTERVAL"`
 	OrchestratorJobLease                  time.Duration `mapstructure:"ORCHESTRATOR_JOB_LEASE"`
 	OrchestratorJobCleanupInterval        time.Duration `mapstructure:"ORCHESTRATOR_JOB_CLEANUP_INTERVAL"`
@@ -75,6 +79,10 @@ func init() {
 	viper.SetDefault("ORCHESTRATOR_LISTEN_PORT", 8080)
 	viper.SetDefault("ORCHESTRATOR_GITHUB_WEBHOOK_SECRET", "")
 	viper.SetDefault("ORCHESTRATOR_GITHUB_ACCESS_TOKEN", "")
+	viper.SetDefault("ORCHESTRATOR_GITHUB_APP_ID", "")
+	viper.SetDefault("ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID", "")
+	viper.SetDefault("ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY", "")
+	viper.SetDefault("ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_PATH", "")
 	viper.SetDefault("ORCHESTRATOR_DISPATCHER_JOB_POLL_INTERVAL", "5s")
 	viper.SetDefault("ORCHESTRATOR_JOB_LEASE", "2m")
 	viper.SetDefault("ORCHESTRATOR_JOB_CLEANUP_INTERVAL", "720h")
